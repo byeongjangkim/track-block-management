@@ -1,0 +1,19 @@
+{
+  "route_code": "gaya",
+  "facilities": [
+    {
+      "type": "STATION",
+      "name": "삼랑진역",
+      "km_start": 0.0,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "가야역",
+      "km_start": 7.1,
+      "km_end": null,
+      "has_station_map": false
+    }
+  ]
+}

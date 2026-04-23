@@ -1,356 +1,260 @@
-# maps — 노선도 제작 파이프라인
+# maps — 노선도 파이프라인
 
-OSM(OpenStreetMap) 또는 VWORLD GIS 데이터를 사용해 커스텀 SVG 철도 노선도를 제작한다.
-M2 MacBook (arm64, macOS 15) 기준. 스캔 이미지 파이프라인 없이 GIS 데이터만으로 제작한다.
-
----
-
-## 환경 현황 (2026-04-03 기준)
-
-| 도구 | 상태 | 설치 방법 |
-|---|---|---|
-| Python 3.12 | 설치됨 | — |
-| Node.js 22 | 설치됨 | — |
-| Homebrew | 설치됨 | — |
-| GDAL (`ogr2ogr`) | **미설치** | `brew install gdal` |
-| geopandas / shapely | **미설치** | `pip install geopandas shapely pyproj requests` |
-| mapshaper | **미설치** | `npm install -g mapshaper` |
-| QGIS | **미설치** | `brew install --cask qgis` (선택사항, GUI 편집용) |
-| Inkscape | **미설치** | `brew install --cask inkscape` (선택사항, SVG 수동 편집) |
-
-### Phase 1 최소 설치 (필수)
-
-```bash
-# 1. GDAL (ogr2ogr — GeoJSON 가공)
-brew install gdal
-
-# 2. Python GIS 스택 (maps 전용 가상환경)
-cd maps
-python3 -m venv .venv
-source .venv/bin/activate
-pip install geopandas shapely pyproj requests
-
-# 3. mapshaper (GeoJSON → SVG 변환)
-npm install -g mapshaper
-```
-
-### 선택 설치 (GUI 편집 필요 시)
-
-```bash
-# QGIS — 시각적 확인·편집 (용량 크므로 필요 시에만 설치)
-brew install --cask qgis
-
-# Inkscape — SVG 수동 후처리
-brew install --cask inkscape
-```
+**역할**: 노선 GIS 데이터 관리 → route_geometry DB → D3.js 전국 노선도 렌더링
 
 ---
 
-## 데이터 소스
+## 핵심 원칙
 
-### 1순위: OpenStreetMap (Overpass API)
+1. **DB SOT**: 모든 GIS 데이터는 SQLite `route_geometry` 테이블에 저장. 파일로 관리하지 않는다.
+2. **source 컬럼으로 레이어 분리**: `source='user'`(공식 데이터)와 `source='shp'`(참조 형태 데이터)를 동일 테이블에서 구분 관리.
+3. **user 데이터 우선**: user 데이터가 있는 노선은 user 레이어를 표시. shp 데이터는 user 업로드 완료 후 단계적으로 삭제.
+4. **노선별 show/hide**: 전국조망·소속 선택 상태와 무관하게 노선별 표시/숨김 토글 가능.
 
-- **URL:** https://overpass-turbo.eu
-- **라이선스:** ODbL 1.0 (출처 표기 의무, 내부 업무용 사용 가능)
-- **형식:** GeoJSON / XML
-- **특징:** API 키 불필요, 즉시 사용 가능
+---
 
-#### 부산경남 철도 Overpass 쿼리
+## route_geometry 테이블 구조
 
-```
-[out:json][timeout:60];
-(
-  way["railway"="rail"](34.5,128.0,36.0,130.0);
-  way["railway"="rail"]["usage"="main"](34.5,128.0,36.0,130.0);
+```sql
+CREATE TABLE route_geometry (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_code TEXT    NOT NULL,
+    source     TEXT    NOT NULL DEFAULT 'shp',  -- 'shp' | 'user'
+    lod        TEXT    NOT NULL,                -- 'high' | 'mid' | 'low'
+    segment    INTEGER NOT NULL DEFAULT 0,      -- 선분 번호 (아래 기준 참조)
+    seq        INTEGER NOT NULL,               -- 선분 내 좌표 순번
+    lat        REAL    NOT NULL,               -- WGS84 위도
+    lon        REAL    NOT NULL,               -- WGS84 경도
+    km         REAL,                           -- KORAIL 거리정 (user만 입력, shp는 NULL)
+    UNIQUE (route_code, source, lod, segment, seq)
 );
-out geom;
 ```
 
-- overpass-turbo.eu 에서 위 쿼리 실행 → Export → GeoJSON → `raw/osm_busan_gyeongnam.geojson` 저장
+### source 별 특성
 
-#### Python으로 직접 다운로드
+| source | 입력 방법 | km | 연속성 | 용도 |
+|---|---|---|---|---|
+| `shp` | 국가기본도 SHP 파싱 | NULL | ❌ 조각남 | 형태 참조용 (점선 표시) |
+| `user` | 관리자 CSV 직접 업로드 | ✅ 권장 (NULL 허용) | ✅ 연속 | 공식 노선도 (실선 표시) |
 
+---
+
+## segment 번호 기준
+
+철도 노선은 시점(km 0.0)~종점 구간의 선형 구조이며, 복선·역구내·분기선 등으로 구성된다.
+`segment` 컬럼은 이 구조를 표현하기 위한 정수 식별자이다.
+
+### 일반 노선 (복선·복복선)
+
+| segment | 의미 | 비고 |
+|---|---|---|
+| `0` | **선로 중앙선** (선로 중심, 본선 대표) | SHP 데이터 기준값. 노선도 기본 표시 |
+| `1` | **하선** (Down, 종점 방향) | 상세 선형 추가 시 |
+| `2` | **상선** (Up, 기점 방향) | 상세 선형 추가 시 |
+| `3+` | **3복선 이상** 추가 선로 | 필요 시 순차 추가 |
+
+### 고속선 (KTX)
+
+| segment | 의미 |
+|---|---|
+| `0` | 선로 중앙선 |
+| `1` | T1 (하선, 서울 출발) |
+| `2` | T2 (상선, 부산 출발) |
+
+### 역구내 (본선 + 측선)
+
+| segment | 의미 |
+|---|---|
+| `0` | 본선 (중앙선 연속) |
+| 홀수 (1, 3, 5, …) | 상선측 역구내 선 (역 번호 기준) |
+| 짝수 (2, 4, 6, …) | 하선측 역구내 선 |
+
+> 역구내 선형은 Phase 3 이후 별도 레이어로 추가 예정.
+
+### 적용 원칙
+
+- **Phase 1 현재**: `segment=0` (선로 중앙선) 만 사용. SHP 데이터가 선로 중심값이므로 그대로 활용.
+- SHP import 시 linemerge 결과 연결 불가 구간이 `segment=1, 2, …`로 자동 분리됨 — 이는 임시 조각 번호이며 공식 segment 번호와 무관.
+- user CSV 업로드 시에는 `segment=0`으로 통일하여 입력 (지선·측선은 별도 segment).
+- 향후 하선/상선 선형 추가 시 `segment=1(하선), 2(상선)` 으로 CSV 직접 입력.
+
+---
+
+---
+
+## 데이터 흐름
+
+### 경로 A — SHP import (source='shp', 형태 참조용)
+
+```
+국가기본도_철도중심선 SHP (maps/raw/railway_line/TN_RLROAD_CTLN)
+  좌표계: EPSG:5179 → EPSG:4326 변환
+  필터: KORAIL 고속(RRC001) + 보통(RRC002) + 도시(RRC004) 철도중심선(RRT001)
+    ↓ linemerge → 다중 segment 분리 (연결 불가 구간 별도 segment)
+    ↓
+route_geometry (source='shp', km=NULL)
+  → D3.js: 점선·흐린 색으로 표시 (참고용)
+  → user 데이터 업로드 완료 후 삭제 예정
+```
+
+**실행:**
 ```bash
-# pipeline/download_osm.py 실행
-python pipeline/download_osm.py
-# → raw/osm_busan_gyeongnam.geojson 생성
+cd maps && source ../backend/.venv/bin/activate
+python3 pipeline/import_shp_to_geometry.py --route gyeongbu   # 단일
+python3 pipeline/import_shp_to_geometry.py --all               # 전체
+python3 pipeline/import_shp_to_geometry.py --list              # 목록
 ```
 
-### 2순위: VWORLD (국가공간정보포털)
-
-- **URL:** https://www.vworld.kr → 오픈API → WFS
-- **라이선스:** 공공누리 1유형 (출처 표기 후 자유 이용)
-- **형식:** SHP, GeoJSON
-- **특징:** API 키 필요 (무료 발급), 공식 국가 데이터
+**웹 UI:** 백엔드 CLI 또는 API(`POST /api/v1/admin/shp/import`) 직접 호출 (UI는 제거됨)
 
 ---
 
-## 파이프라인 개요
+### 경로 B — CSV 직접 업로드 (source='user', 공식 데이터)
 
 ```
-[1단계] 데이터 수집
-  Overpass API → raw/osm_busan_gyeongnam.geojson
-  (또는 VWORLD WFS → raw/vworld_railway.shp)
-
-[2단계] 노선별 GeoJSON 분리 (Python + geopandas)
-  pipeline/extract_routes.py
-  → processed/gyeongbu.geojson
-  → processed/gyeongjeon.geojson
-  → processed/donghae.geojson
-  ...
-
-[3단계] SVG 변환 (mapshaper)
-  mapshaper processed/gyeongbu.geojson \
-    -proj merc \
-    -simplify 0.5% \
-    -o format=svg svg/gyeongbu.svg
-
-[4단계] 거리정 앵커 포인트 매핑 (Python CLI)
-  pipeline/anchor_editor.py --route gyeongbu
-  → anchors/gyeongbu.json
-
-[5단계] 시설물 JSON 작성 (텍스트 편집기)
-  → facilities/gyeongbu.json
-
-[6단계] 프론트엔드 배포
-  pipeline/deploy.py --route gyeongbu
-  → ../frontend/public/maps/gyeongbu.svg 복사
+KORAIL 선로제원표 / 직접 측정 데이터
+  → CSV 작성 (segment, seq, lat, lon, km)
+  → 노선도 관리 → "노선도 업로드" → API
+    ↓
+route_geometry (source='user', km=입력값)
+  → D3.js: 실선·진한 색으로 표시 (공식)
+  → km 기반 관할구간 슬라이싱 가능
+  → 해당 노선의 shp 데이터는 별도 관리 후 삭제
 ```
+
+**CSV 템플릿 컬럼:**
+```
+segment,seq,lat,lon,km
+```
+
+| 컬럼 | 설명 | 예시 |
+|---|---|---|
+| segment | 선분 번호 (본선=0, 지선=1,2,...) | 0 |
+| seq | 선분 내 좌표 순번 (0부터) | 0, 1, 2, ... |
+| lat | WGS84 위도 | 37.5547 |
+| lon | WGS84 경도 | 126.9707 |
+| km | KORAIL 공식 거리정 (소수점 1자리) | 0.0, 0.3, 0.8, ... |
+
+- 노선 코드는 업로드 URL(`/admin/routes/{route_code}/geometry-upload`)로 결정
+- 업로드 시 해당 노선의 기존 `source='user'` 데이터를 교체
+- LOD(mid, low)는 서버에서 Douglas-Peucker로 자동 생성
+
+**웹 UI:** 노선도 관리(`/admin/route-geometry`) → [CSV 다운로드] → 편집 → [CSV 업로드]
 
 ---
 
-## 디렉토리 구조
+## LOD-줌-km 기준 (D3.js 줌 스케일 k 기준)
+
+초기 화면(전국 조망)의 줌 스케일 k ≈ 0.95.  
+D3 Mercator 기준 초기 스케일 s₀ ≈ 3.7 px/km.
+
+### 줌 구간별 LOD 전환
+
+| D3 줌 k | 화면 분해능 (1km→px) | LOD | km 간격 목표 | 대상 뷰 |
+|---|---|---|---|---|
+| k < 3 | < 11 px/km | `low` | **10km** | 전국·광역 조망 |
+| 3 ≤ k < 8 | 11~30 px/km | `mid` | **2km** | 지역본부 권역 |
+| k ≥ 8 | ≥ 30 px/km | `high` | **500m** | 노선·구간 정밀 |
+
+- RailwayMap.tsx 줌 핸들러에서 `zoomToLod(k)` 함수로 LOD를 자동 판단 후 `currentLod` state 변경
+- `currentLod` 변경 시 `fetchAllGeometry(lod)` 재호출 → 노선 경로만 교체 (레이어 구조·줌 위치 유지)
+- LOD 전환 시 프로젝션은 유지 (`projRef`), 현재 줌 위치는 `savedTransformRef`로 복원
+
+### CSV 입력 기준 (source='user')
+
+**입력 CSV = high LOD 원본** (500m 간격 권장), mid/low는 업로드 시 자동 생성.
+
+| LOD | tolerance | 자동 생성 결과 | 비고 |
+|---|---|---|---|
+| `high` | None (원본) | 500m 간격 유지 | CSV 직접 입력 |
+| `mid` | 0.005° ≈ 550m | 직선 구간 제거 → 2km 간격 목표 | Douglas-Peucker 자동 |
+| `low` | 0.02° ≈ 2.2km | 주요 굴곡만 유지 → 10km 간격 목표 | Douglas-Peucker 자동 |
+
+### CSV 다운로드 우선순위
+
+노선도 관리에서 [CSV 다운로드] 클릭 시:
+
+| 조건 | 반환 내용 |
+|---|---|
+| USER geometry 있음 | 현재 USER high LOD 데이터 그대로 반환 |
+| USER 없음, SHP 있음 | SHP 좌표 + 역 GPS 앵커 기반 km 추정값 포함 |
+| USER·SHP 없음, 역 GPS 있음 | 역 앵커 포인트만 포함 |
+| 모두 없음 | 빈 템플릿 + 헤더 주석만 |
+
+모든 경우 CSV 헤더에 노선 관리역 목록(km 기준값)과 LOD 입력 기준 주석 포함.
+
+---
+
+## 노선 레이어 토글 (BlockMapPage)
+
+BlockMapPage 사이드바의 [지도 설정 ▼] 섹션 내에 노선별 show/hide 체크박스를 제공한다.
+
+- 날짜·노선 필터, 조직 선택과 **무관하게** 항상 노선 목록 표시 가능
+- D3.js는 `hiddenRoutes: Set<string>` 집합에 없는 route_code만 렌더링
+- `hiddenRoutes` 변경 시 D3 path `display` 속성만 갱신 (전체 재초기화 없음)
+- **그룹 분류:**
+  - 고속철도: `gyeongbu_high`, `honam_high`, `gangneung`, `donghae_ktx`, `jungbu_naeryuk`, `suseo_pyeongtaek`
+  - 지하철: `suin`, `bundang`
+  - 보통철도: 나머지 전체
+- 초기 상태: 전체 표시
+
+---
+
+## 파일 구성
 
 ```
 maps/
-├── raw/                            # 원본 다운로드 데이터 — .gitignore
-│   ├── osm_busan_gyeongnam.geojson # Overpass API 다운로드 결과
-│   └── vworld_railway.shp          # VWORLD 다운로드 결과 (선택)
-├── processed/                      # 노선별 분리 GeoJSON — .gitignore
-│   ├── gyeongbu.geojson
-│   ├── gyeongjeon.geojson
-│   └── donghae.geojson
-├── svg/                            # 완성된 SVG 파일 (git 포함)
-│   ├── gyeongbu.svg
-│   └── ...
-├── anchors/                        # 거리정 앵커 포인트 JSON (git 포함)
-│   ├── gyeongbu.json
-│   └── ...
-├── facilities/                     # 시설물 JSON (git 포함)
-│   ├── gyeongbu.json
-│   └── ...
-├── station_maps/                   # 역구내 배선도 SVG (Phase 3)
-│   └── ...
 ├── pipeline/
-│   ├── download_osm.py             # Overpass API → GeoJSON 다운로드
-│   ├── extract_routes.py           # 노선별 GeoJSON 분리 (geopandas)
-│   ├── anchor_editor.py            # 거리정 앵커 포인트 CLI 편집기
-│   └── deploy.py                   # SVG를 frontend/public/maps/ 에 복사
-├── .gitignore
-└── requirements.txt
+│   ├── import_shp_to_geometry.py      # SHP → route_geometry source='shp' (신규 노선 등록용)
+│   └── seed_org_viewport.py           # org_viewport 초기값 DB 입력
+└── raw/
+    └── railway_line/
+        └── TN_RLROAD_CTLN.*           # 국가기본도_철도중심선 SHP (.gitignore)
 ```
 
 ---
 
-## 스크립트별 상세
+## 구현 단계 및 현황
 
-### pipeline/download_osm.py
-
-Overpass API를 호출해 부산경남 범위의 철도 GeoJSON을 저장한다.
-
-```python
-import requests, json, pathlib
-
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-QUERY = """
-[out:json][timeout:60];
-(
-  way["railway"="rail"](34.5,128.0,36.0,130.0);
-);
-out geom;
-"""
-
-def main():
-    resp = requests.post(OVERPASS_URL, data={"data": QUERY}, timeout=90)
-    resp.raise_for_status()
-    pathlib.Path("raw").mkdir(exist_ok=True)
-    with open("raw/osm_busan_gyeongnam.geojson", "w", encoding="utf-8") as f:
-        # Overpass JSON → GeoJSON 변환은 osmtogeojson 또는 수동 변환
-        json.dump(resp.json(), f, ensure_ascii=False, indent=2)
-
-if __name__ == "__main__":
-    main()
-```
-
-> Overpass 응답은 OSM 자체 JSON 포맷. GeoJSON으로 변환 시 `osmtogeojson` (npm) 사용:
-> `npm install -g osmtogeojson`
-> `osmtogeojson raw/osm_busan_gyeongnam.json > raw/osm_busan_gyeongnam.geojson`
-
-### pipeline/extract_routes.py
-
-OSM GeoJSON에서 노선명 태그(`name` 속성)로 필터링해 노선별 GeoJSON을 분리한다.
-
-```python
-import geopandas as gpd, pathlib, sys
-
-ROUTE_FILTERS = {
-    "gyeongbu":   ["경부선"],
-    "gyeongjeon": ["경전선"],
-    "donghae":    ["동해선", "부전마산복선전철"],
-    "jinhae":     ["진해선"],
-}
-
-def main():
-    gdf = gpd.read_file("raw/osm_busan_gyeongnam.geojson")
-    pathlib.Path("processed").mkdir(exist_ok=True)
-    for code, names in ROUTE_FILTERS.items():
-        mask = gdf["name"].isin(names)
-        subset = gdf[mask]
-        if subset.empty:
-            print(f"[경고] {code}: 데이터 없음 — OSM 태그 확인 필요")
-            continue
-        subset.to_file(f"processed/{code}.geojson", driver="GeoJSON")
-        print(f"[완료] processed/{code}.geojson ({len(subset)}개 way)")
-
-if __name__ == "__main__":
-    main()
-```
-
-> OSM 태그의 `name` 값이 정확히 맞지 않을 수 있음. 실행 후 결과 확인 필수.
-
-### mapshaper SVG 변환 명령
-
-```bash
-# 단일 노선 변환
-mapshaper processed/gyeongbu.geojson \
-  -proj merc \
-  -simplify 0.5% \
-  -o format=svg svg/gyeongbu.svg
-
-# 전체 노선 일괄 변환 (bash 루프)
-for route in gyeongbu gyeongjeon donghae jinhae; do
-  mapshaper processed/${route}.geojson \
-    -proj merc -simplify 0.5% \
-    -o format=svg svg/${route}.svg
-done
-```
-
-> `-proj merc`: 메르카토르 투영 (SVG 좌표 왜곡 최소화)
-> `-simplify 0.5%`: 과도한 노드 수 감소 (SVG 파일 용량 절감)
-
-### pipeline/anchor_editor.py
-
-SVG 파일을 브라우저로 열어 특정 지점의 SVG 좌표를 확인하고, 해당 km값을 입력하는 CLI 인터랙티브 도구.
-
-```bash
-python pipeline/anchor_editor.py --route gyeongbu
-# → SVG 좌표와 km 값을 대화식으로 입력
-# → anchors/gyeongbu.json 저장
-```
-
-### pipeline/deploy.py
-
-완성된 SVG를 프론트엔드 public 디렉토리에 복사한다.
-
-```bash
-python pipeline/deploy.py --route gyeongbu
-# → ../frontend/public/maps/gyeongbu.svg
-```
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| **1. 노선 DB 구축** | routes 테이블 — 51개 노선 등록 | ✅ 완료 |
+| **2. SHP import** | source='shp' 49개 노선, 다중 segment | ✅ 완료 |
+| **3. 노선 레이어 토글** | BlockMapPage 사이드바 노선별 show/hide (그룹 분류) | ✅ 완료 |
+| **4. 노선도 CSV 업로드** | source='user' CSV 업로드, 템플릿/다운로드 | ✅ 완료 |
+| **5. SHP 삭제 기능** | 노선별 source='shp' 데이터 삭제 UI | ✅ 완료 |
+| **6. user/shp 레이어 분리 렌더링** | user=실선, shp=점선 표시 | ✅ 완료 |
+| **7. 시설물 레이어 (km 보간)** | user geometry km 기반 좌표 보간 → D3 렌더링 | ✅ 완료 |
+| **8. 차단구간 오버레이** | start_km~end_km → user geometry 보간 → GeoJSON 오버레이 | ✅ 완료 |
+| **9. 경부선 user geometry 등록** | SHP → 위도 기반 정렬 + Haversine km 계산 → CSV (12,738pts) | ✅ 완료 |
+| **10. 관리역 GPS 앵커 등록** | OSM Overpass API 배치 조회 → 75개 역 GPS 취득 → facilities 등록 | ✅ 완료 |
+| **11. LOD 자동 전환** | 줌 k < 3 → low, 3~8 → mid, ≥ 8 → high | ✅ 완료 |
+| **12. CSV 다운로드 개선** | geometry-template → USER/SHP/앵커 우선순위별 실데이터 반환 | ✅ 완료 |
+| **13. LOD tolerance 재조정** | low 0.02°(10km), mid 0.005°(2km), high None(500m) | ✅ 완료 |
+| **14. km 기반 관할구간 슬라이싱** | 전 노선 user 업로드 완료 후 활성화 | ⬜ 대기 |
+| **15. 노선별 user CSV 입력** | 각 노선 CSV 다운로드 → 공식 km 수정 → 업로드 → SHP 삭제 | 🔄 진행 중 |
 
 ---
 
-## 앵커 포인트 JSON 형식
+## SHP 데이터 한계 (참고)
 
-```json
-{
-  "route": "경부선",
-  "route_code": "gyeongbu",
-  "start_km": 0.0,
-  "end_km": 451.8,
-  "up_offset_px": -6,
-  "down_offset_px": 6,
-  "anchors": [
-    { "km": 0.0,   "x": 120.5, "y": 980.2 },
-    { "km": 50.0,  "x": 145.3, "y": 870.1 },
-    { "km": 100.0, "x": 178.9, "y": 750.6 }
-  ]
-}
-```
+| 항목 | 내용 |
+|---|---|
+| km=NULL | SHP에 KORAIL 공식 거리정 없음 → 관할구간 슬라이싱 불가 |
+| 선분 조각남 | 경부선 low LOD 기준 69개 조각 → linemerge로 완전 해결 불가 |
+| 방향 없음 | 상선/하선(UP/DOWN) 구분 정보 없음 |
+| 일부 미수록 | 가야선·가은선 SHP 미수록 |
+| 위상 불일치 | 인접 선분 끝점 좌표가 정확히 일치하지 않음 |
 
-- 앵커 사이 구간은 프론트엔드 `mapCoord.ts`에서 선형 보간으로 계산
-- `up_offset_px`: 상선 표시 y 오프셋 (음수 = 위쪽)
-- `down_offset_px`: 하선 표시 y 오프셋 (양수 = 아래쪽)
-- SVG 좌표는 mapshaper 변환 후 브라우저 개발자 도구(요소 검사)로 확인
+→ **위 한계는 user CSV 직접 입력으로만 해결 가능**
 
 ---
 
-## 시설물 JSON 형식
+## 관련 문서
 
-```json
-{
-  "route_code": "gyeongbu",
-  "facilities": [
-    { "type": "STATION",    "km": 325.4, "name": "구포역",       "has_station_map": true },
-    { "type": "CROSSING",   "km": 310.2, "name": "덕두건널목",   "has_station_map": false },
-    { "type": "SUBSTATION", "km": 290.0, "name": "삼랑진변전소", "has_station_map": false }
-  ]
-}
-```
-
-시설물 type 종류: `STATION` / `CROSSING` / `OVERPASS` / `SUBSTATION` / `TUNNEL` / `BRIDGE`
-
----
-
-## requirements.txt
-
-```
-geopandas
-shapely
-pyproj
-requests
-```
-
----
-
-## Phase 1 작업 순서 (경부선 시범)
-
-```bash
-# 0. 환경 준비
-brew install gdal
-npm install -g mapshaper osmtogeojson
-cd maps && python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# 1. OSM 데이터 다운로드
-python pipeline/download_osm.py
-osmtogeojson raw/osm_busan_gyeongnam.json > raw/osm_busan_gyeongnam.geojson
-
-# 2. 노선별 GeoJSON 분리
-python pipeline/extract_routes.py
-
-# 3. SVG 변환
-mapshaper processed/gyeongbu.geojson -proj merc -simplify 0.5% -o format=svg svg/gyeongbu.svg
-
-# 4. 브라우저에서 SVG 확인
-open svg/gyeongbu.svg
-
-# 5. 거리정 앵커 포인트 입력
-python pipeline/anchor_editor.py --route gyeongbu
-
-# 6. 시설물 JSON 작성 (VSCode로 직접 편집)
-code facilities/gyeongbu.json
-
-# 7. 프론트엔드에 배포
-python pipeline/deploy.py --route gyeongbu
-```
-
----
-
-## 주의사항
-
-- `raw/`, `processed/` 는 `.gitignore` 처리 (대용량 바이너리 및 다운로드 파일)
-- `svg/`, `anchors/`, `facilities/` 는 git에 포함 (산출물)
-- OSM 데이터의 노선명(`name` 태그) 불일치 가능 → `extract_routes.py` 실행 후 경고 메시지 확인
-- mapshaper SVG의 viewBox는 노선마다 다름 — 앵커 좌표는 각 SVG 기준 좌표
-- **대상 노선 목록 도메인 담당자 확인 필요** (경부선·경전선·동해선·진해선 외 추가 여부)
-- VWORLD 사용 시 API 키 발급 필요 (vworld.kr → 오픈API 신청)
+| 문서 | 내용 |
+|---|---|
+| [../CLAUDE.md](../CLAUDE.md) | 프로젝트 전체 개요, 노선도 GIS 아키텍처 요약 |
+| [ROUTE_MANAGEMENT.md](ROUTE_MANAGEMENT.md) | 51개 노선 등록 현황, SHP→user 전환 절차 |
+| [../backend/CLAUDE.md](../backend/CLAUDE.md) | geometry 관리 API 엔드포인트 |
+| [../frontend/UI_UX.md](../frontend/UI_UX.md) | 노선도 렌더링 UI, source별 색상·스타일 |

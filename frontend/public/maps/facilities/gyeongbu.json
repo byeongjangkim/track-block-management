@@ -1,0 +1,124 @@
+{
+  "route_code": "gyeongbu",
+  "facilities": [
+    {
+      "type": "STATION",
+      "name": "서울역",
+      "km_start": 0.0,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "영등포역",
+      "km_start": 11.1,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "수원역",
+      "km_start": 41.5,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "천안역",
+      "km_start": 94.4,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "대전역",
+      "km_start": 166.3,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "김천역",
+      "km_start": 240.9,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "구미역",
+      "km_start": 261.3,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "동대구역",
+      "km_start": 293.8,
+      "km_end": null,
+      "has_station_map": true
+    },
+    {
+      "type": "STATION",
+      "name": "경산역",
+      "km_start": 308.1,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "밀양역",
+      "km_start": 361.8,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "삼랑진역",
+      "km_start": 378.8,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "원동역",
+      "km_start": 393.4,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "물금역",
+      "km_start": 415.7,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "화명역",
+      "km_start": 421.2,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "구포역",
+      "km_start": 426.0,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "사상역",
+      "km_start": 430.8,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "부산역",
+      "km_start": 451.8,
+      "km_end": null,
+      "has_station_map": true
+    }
+  ]
+}

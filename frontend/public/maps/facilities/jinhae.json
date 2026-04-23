@@ -1,0 +1,26 @@
+{
+  "route_code": "jinhae",
+  "facilities": [
+    {
+      "type": "STATION",
+      "name": "창원역",
+      "km_start": 0.0,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "통해역",
+      "km_start": 5.9,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "진해역",
+      "km_start": 21.3,
+      "km_end": null,
+      "has_station_map": false
+    }
+  ]
+}

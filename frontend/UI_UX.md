@@ -1,0 +1,202 @@
+# UI/UX 설계 문서
+
+선로차단작업 관리 프로그램의 화면 구성, 컴포넌트 패턴, 시각적 규칙을 정의한다.
+
+> **페이지별 UI 명세 (각 화면 레이아웃·필터·폼 상세)** → [UI_UX_pages.md](UI_UX_pages.md)
+
+---
+
+## 1. 설계 원칙
+
+| 원칙 | 내용 |
+|---|---|
+| **사내망 PC 우선** | 1280px 이상 해상도 기준. 모바일 대응은 Phase 3 이후. |
+| **역할 기반 UI** | 권한 없는 기능은 노출하지 않는다. |
+| **단순한 데이터 표시** | 통계·그래프보다 날것의 데이터를 테이블로 표시. |
+| **한국어 인터페이스** | 메뉴·레이블·메시지 전부 한국어. 코드값만 영문. |
+| **최소 클릭** | 조회·등록·수정 흐름에서 불필요한 페이지 전환 배제. |
+
+---
+
+## 2. 기술 스택 (UI 관련)
+
+| 항목 | 선택 |
+|---|---|
+| CSS | Tailwind CSS v4 |
+| 컴포넌트 | shadcn/ui (필요한 것만) |
+| 지도 시각화 | D3.js v7 |
+| 라우팅 | React Router v6 |
+| 서버 상태 | TanStack Query v5 |
+| 클라이언트 상태 | Zustand |
+
+---
+
+## 3. 레이아웃 구조
+
+```
+┌──────────────────────────────────────────────────────┐
+│ Header (고정, bg-blue-700)                            │
+│  로고 · 네비게이션 · 사용자 이름 · 로그아웃           │
+├──────────────────────────────────────────────────────┤
+│ main (flex-1, overflow-hidden)                        │
+│  ┌────────────┬─────────────────────────────────────┐ │
+│  │ sidebar    │ content (각 페이지)                  │ │
+│  │ (MapPage)  │                                     │ │
+│  └────────────┴─────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
+
+- 사이드바: BlockMapPage 전용, 너비 `w-52` 고정
+
+---
+
+## 4. 컬러 팔레트
+
+### 브랜드 색상
+
+| 용도 | 클래스 |
+|---|---|
+| 헤더 배경 | `bg-blue-700` |
+| 기본 버튼 | `bg-blue-600 hover:bg-blue-700` |
+| 링크 | `text-blue-600 hover:underline` |
+| 위험(삭제) | `text-red-500` |
+
+### 노선 색상 (D3.js)
+
+| 구분 | source | 색상 | 스타일 |
+|---|---|---|---|
+| 일반선 공식 | `user` | `#374151` | 실선, opacity 1.0 |
+| 고속선 공식 | `user` | `#dc2626` | 실선, opacity 1.0 |
+| 일반선 참조 | `shp` | `#9ca3af` | 점선 `4 3`, opacity 0.5 |
+| 고속선 참조 | `shp` | `#fca5a5` | 점선 `4 3`, opacity 0.5 |
+
+### 관할 구간 강조 색상
+
+| 분야 | 색상 |
+|---|---|
+| all | `#2563eb` |
+| 시설 | `#7c3aed` |
+| 전기 | `#d97706` |
+| 건축 | `#dc2626` |
+
+### 배지 색상
+
+| 항목 | 배경 | 텍스트 |
+|---|---|---|
+| 상선 (UP) | `bg-blue-100` | `text-blue-700` |
+| 하선 (DOWN) | `bg-orange-100` | `text-orange-700` |
+| 시설 분야 | `bg-indigo-100` | `text-indigo-700` |
+| 전기 분야 | `bg-yellow-100` | `text-yellow-700` |
+| 건축 분야 | `bg-emerald-100` | `text-emerald-700` |
+| 외부 작업 | `bg-yellow-100` | `text-yellow-700` |
+| 최상위 관리자 | `bg-red-100` | `text-red-700` |
+| 조직 관리자 | `bg-blue-100` | `text-blue-700` |
+| 일반 사용자 | `bg-gray-100` | `text-gray-600` |
+
+---
+
+## 5. 역할별 메뉴 표시 규칙
+
+| 메뉴 | 경로 | user | org_admin | superuser |
+|---|---|---|---|---|
+| 차단현황도 | `/block-map` | ✅ | ✅ | ✅ |
+| 차단명령 | `/block-orders` | ✅ | ✅ | ✅ |
+| 캘린더 | `/calendar` | ✅ | ✅ | ✅ |
+| 시설물 관리 | `/admin/facilities` | ❌ | ✅ | ✅ |
+| 노선도 관리 | `/admin/route-geometry` | ❌ | ❌ | ✅ |
+| 사용자 관리 | `/admin/users` | ❌ | ❌ | ✅ |
+
+- 활성 페이지: `bg-white text-blue-700`
+- 어드민 메뉴: 구분선(`|`) 이후 배치, `text-blue-200`
+- 리다이렉트: `/map` → `/block-map`, `/admin/shp-import` → `/admin/route-geometry`
+
+---
+
+## 7. 공통 컴포넌트 패턴
+
+### 7.1 테이블
+
+- `border rounded-lg overflow-auto` 외곽
+- 헤더: `bg-gray-50 sticky top-0`, `text-xs font-medium text-gray-500`
+- 행: `border-b hover:bg-gray-50 transition-colors`
+- 비어있을 때: `text-center py-12 text-gray-400`
+
+### 7.2 필터/폼 컨트롤
+
+- `<select>`: `h-9 w-32 border rounded-lg pl-3 pr-8 text-sm focus:ring-2 focus:ring-blue-400 bg-white appearance-none cursor-pointer`
+- `<input type="date">`: `h-9 border rounded-lg px-3 text-sm focus:ring-2 focus:ring-blue-400 bg-white`
+- 커스텀 화살표: `relative div` 래퍼 + `▾` span (`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2`)
+
+### 7.3 버튼 종류
+
+| 종류 | 클래스 패턴 |
+|---|---|
+| 주 액션 | `px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700` |
+| 보조 (수정) | `text-xs text-blue-600 hover:underline` |
+| 위험 (삭제) | `text-xs text-red-500 hover:underline` |
+| 아웃라인 소형 | `px-2 py-1 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-100` |
+| 비활성 | `disabled:opacity-40 disabled:cursor-not-allowed` |
+
+### 7.4 알림/피드백 배너
+
+```tsx
+// 성공
+<div className="bg-green-50 text-green-700 border border-green-200 rounded px-4 py-2 text-sm">
+// 오류
+<div className="bg-red-50 text-red-700 border border-red-200 rounded px-4 py-2 text-sm">
+// 경고
+<div className="bg-yellow-50 text-yellow-700 border border-yellow-200 rounded p-4 text-sm">
+// 정보
+<div className="bg-blue-50 text-blue-700 border border-blue-200 rounded p-3 text-sm">
+```
+
+### 7.5 모달 오버레이
+
+```tsx
+<div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+  <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
+    ...
+  </div>
+</div>
+```
+
+### 7.6 배지
+
+```tsx
+<span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+  상선
+</span>
+```
+
+### 7.7 로딩 상태
+
+- 데이터 로딩 중: `text-gray-400` 또는 "불러오는 중..." 텍스트
+- 버튼 처리 중: `disabled` + 텍스트 변경
+- 지도 데이터 없음: `absolute inset-0 flex items-center justify-center text-gray-400`
+
+---
+
+## 8. 권한별 UI 제어 요약
+
+| 기능 | user | org_admin | superuser |
+|---|---|---|---|
+| 차단현황도·차단명령·캘린더 조회 | ✅ | ✅ | ✅ |
+| 차단명령 등록 | ❌ | ✅ (관할 내) | ✅ |
+| 차단명령 수정·삭제 | ❌ | ✅ (자기 조직) | ✅ |
+| 시설물 관리 | ❌ | ✅ | ✅ |
+| 노선도·사용자 관리 | ❌ | ❌ | ✅ |
+| 조직 선택 드롭다운 | ❌ | ❌ | ✅ |
+
+```typescript
+const canRegister = user?.role === 'org_admin' || user?.role === 'system_superuser';
+const isSuperuser = user?.role === 'system_superuser';
+```
+
+---
+
+## 9. UX 규칙
+
+- **삭제 확인:** `window.confirm()` + 대상 명시
+- **폼 검증:** 클라이언트(필수 항목 빈값) + 서버(권한·범위·중복)
+- **파일 업로드:** 숨겨진 `<input type="file">` + 버튼 트리거, 업로드 중 비활성화
+- **인라인 편집 (FacilitiesAdminPage):** `editingId: number | 'new' | null` 상태로 관리

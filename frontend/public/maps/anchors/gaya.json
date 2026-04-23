@@ -1,0 +1,20 @@
+{
+  "route": "가야선",
+  "route_code": "gaya",
+  "start_km": 0.0,
+  "end_km": 7.1,
+  "up_offset_px": -6,
+  "down_offset_px": 6,
+  "anchors": [
+    {
+      "km": 0.0,
+      "x": -4710.0,
+      "y": -4694.0
+    },
+    {
+      "km": 7.1,
+      "x": 93.7,
+      "y": -328.8
+    }
+  ]
+}

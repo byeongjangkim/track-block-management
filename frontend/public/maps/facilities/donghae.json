@@ -1,0 +1,54 @@
+{
+  "route_code": "donghae",
+  "facilities": [
+    {
+      "type": "STATION",
+      "name": "부전역",
+      "km_start": 0.0,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "거제역",
+      "km_start": 4.9,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "해운대역",
+      "km_start": 14.2,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "기장역",
+      "km_start": 26.3,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "좌천역",
+      "km_start": 36.7,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "울산역",
+      "km_start": 90.8,
+      "km_end": null,
+      "has_station_map": false
+    },
+    {
+      "type": "STATION",
+      "name": "포항역",
+      "km_start": 188.6,
+      "km_end": null,
+      "has_station_map": false
+    }
+  ]
+}
