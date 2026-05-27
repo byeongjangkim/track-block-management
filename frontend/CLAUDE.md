@@ -58,11 +58,9 @@ frontend/src/
 │   ├── FacilitiesAdminPage.tsx   # 시설물 관리 (org_admin+)
 │   ├── OrgRangesAdminPage.tsx    # 담당구역 관리 (superuser) — 조직별 관할구간 CRUD
 │   ├── UsersAdminPage.tsx        # 사용자 관리 (superuser)
-│   ├── RouteGeometryPage.tsx     # 노선도 관리 (superuser)
-│   ├── MapPage.tsx               # /map → /block-map 리다이렉트 전용
-│   └── ShpImportPage.tsx         # /admin/shp-import → /admin/route-geometry 리다이렉트 전용
+│   └── RouteGeometryPage.tsx     # 노선도 관리 (superuser)
 ├── components/
-│   ├── map/RailwayMap.tsx        # D3.js 전국 노선도 (차단구간·시설물·관할구간 오버레이)
+│   ├── map/RailwayMap.tsx        # D3.js 전국 노선도 (시도·시군구 배경 + 차단구간·시설물·관할구간 오버레이)
 │   ├── block/
 │   │   ├── BlockOrderForm.tsx    # 차단명령 등록/수정 모달 + 시행문 PDF 불러오기
 │   │   └── PdfImportModal.tsx    # PDF 일괄등록 3단계 모달 (업로드→검토→저장)
@@ -118,8 +116,16 @@ const isSuperuser = user?.role === 'system_superuser';
 // applied* — [조회] 버튼 클릭 시 복사 → queryKey로 사용 → API 호출
 ```
 
-### RailwayMap D3
+### RailwayMap D3 / KoreaMap D3
 
+**배경 지도 (공통):**
+- `GET /api/v1/map/sigungu?level=2` → 시도(17개) + 시군구(255개) 동시 로드
+- 시도: `SIDO_FILLS` 4색 배분 채움 (투명도 0.15) + `stroke '#6b8299'` 1.0px
+- 시군구: `fill none` + `stroke '#8fa5b8'` 0.5px, zoom ≥ 1.5에서 표시
+- `vector-effect: non-scaling-stroke` — 줌 배율 무관 일정 pixel 선 굵기
+- 컨테이너 배경: `bg-[#e8edf2]`
+
+**RailwayMap 추가:**
 - `source='user'` 실선 / `source='shp'` 점선 (`stroke-dasharray: 4 3`)
 - 줌 임계값: `ZOOM_STATION=0.8` / `ZOOM_SEGMENT=3` / `ZOOM_DETAIL=8`
 - `hiddenRoutes: Set<string>` — D3 path `display` 속성 직접 갱신 (React 리렌더링 없음)

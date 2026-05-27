@@ -1,19 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 
-/**
- * 메뉴 구조 (3개 그룹)
- *
- * [그룹 1] 조회·현황 — 모든 로그인 사용자
- *   노선도 | 차단현황도 | 차단명령 | 캘린더
- *
- * [그룹 2] 기준정보 관리 — org_admin 이상
- *   시설물 관리
- *
- * [그룹 3] 시스템 관리 — system_superuser 전용
- *   노선도 관리 | 사용자 관리
- */
-
 const NAV_MAIN = [
   { to: '/block-map',    label: '차단현황도' },
   { to: '/block-orders', label: '차단명령' },
@@ -21,13 +8,11 @@ const NAV_MAIN = [
 ];
 
 const NAV_ADMIN = [
-  { to: '/admin/facilities', label: '시설물 관리' },
+  { to: '/admin/reference', label: '기준정보 관리' },
 ];
 
 const NAV_SUPERUSER = [
-  { to: '/admin/route-geometry', label: '노선도 관리' },
-  { to: '/admin/org-ranges',     label: '담당구역 관리' },
-  { to: '/admin/users',          label: '사용자 관리' },
+  { to: '/admin/users', label: '사용자 관리' },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {

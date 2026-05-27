@@ -171,7 +171,7 @@ export default function OrgRangesAdminPage() {
   if (selectedOrgId === null) {
     return (
       <div className="h-full flex flex-col p-6 overflow-hidden">
-        <h1 className="text-lg font-semibold text-gray-800 mb-4 shrink-0">담당구역 관리</h1>
+        <h1 className="text-lg font-semibold text-gray-800 mb-4 shrink-0">지역본부 경계/담당구역 관리</h1>
         <div className="flex-1 overflow-auto border rounded-lg">
           <table className="w-full text-sm border-collapse">
             <thead className="bg-gray-50 sticky top-0">

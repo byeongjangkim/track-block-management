@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mapshaper processed/gyeongbu.geojson -proj merc -simplify 0.5% -o format=svg svg/gyeongbu_test.svg)"
+    ]
+  }
+}

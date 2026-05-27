@@ -4,11 +4,16 @@ from pydantic import BaseModel, field_validator
 
 
 class BlockOrderCreate(BaseModel):
-    route_id: int
+    route_id: int | None = None              # legacy routes.id
+    rail_route_id: int | None = None         # 최종 rail_routes.id
     organization_id: int | None = None  # system_superuser가 타 조직 대신 등록 시 지정
     direction: str
+    # 철도 km과 KP는 같은 의미로 사용한다. km 필드는 legacy 입력 호환용,
+    # KP 필드는 최종 rail_baseline_points 보간 기준이다.
     start_km: float | None = None       # 전차선 단전 등 km 없는 경우
     end_km: float | None = None
+    start_kp: float | None = None
+    end_kp: float | None = None
     section_note: str | None = None     # 단전구간명 (예: "청도SP~밀양SS")
     start_facility_id: int | None = None  # 전차선 단전 시작 변전소 (facilities.id)
     end_facility_id: int | None = None    # 전차선 단전 종료 변전소 (facilities.id)
@@ -45,9 +50,13 @@ class BlockOrderCreate(BaseModel):
 
 
 class BlockOrderUpdate(BaseModel):
+    route_id: int | None = None
+    rail_route_id: int | None = None
     direction: str | None = None
     start_km: float | None = None
     end_km: float | None = None
+    start_kp: float | None = None
+    end_kp: float | None = None
     section_note: str | None = None
     start_facility_id: int | None = None
     end_facility_id: int | None = None
@@ -79,10 +88,13 @@ class BlockOrderUpdate(BaseModel):
 class BlockOrderResponse(BaseModel):
     id: int
     organization_id: int | None
-    route_id: int
+    route_id: int | None
+    rail_route_id: int | None
     direction: str
     start_km: float | None
     end_km: float | None
+    start_kp: float | None
+    end_kp: float | None
     section_note: str | None
     start_facility_id: int | None
     end_facility_id: int | None

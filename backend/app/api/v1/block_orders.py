@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db, require_org_admin
 from app.models.block_order import BlockOrder
+from app.models.rail_baseline import RailRoute
 from app.models.route import Route
 from app.models.user import User
 from app.schemas.block_order import BlockOrderCreate, BlockOrderResponse, BlockOrderUpdate
@@ -14,15 +15,110 @@ from app.services.auth_service import can_register_block_order, is_owner_or_supe
 router = APIRouter(prefix="/block-orders", tags=["차단명령"])
 
 
+def _rail_route_id_from_legacy_route(db: Session, route_id: int | None) -> int | None:
+    if route_id is None:
+        return None
+    route = db.query(Route).filter(Route.id == route_id).first()
+    if not route:
+        return None
+    candidates = [
+        route.name,
+        route.name.replace(" (KTX)", ""),
+        route.name.replace("고속선", "선"),
+    ]
+    return (
+        db.query(RailRoute.id)
+        .filter(RailRoute.name.in_(candidates))
+        .order_by(RailRoute.id)
+        .scalar()
+    )
+
+
+def _legacy_route_id_from_rail_route(db: Session, rail_route_id: int | None) -> int | None:
+    if rail_route_id is None:
+        return None
+    rail_route = db.query(RailRoute).filter(RailRoute.id == rail_route_id).first()
+    if not rail_route:
+        return None
+    candidates = [
+        rail_route.name,
+        f"{rail_route.name} (KTX)",
+        rail_route.name.replace("선", "고속선"),
+    ]
+    return (
+        db.query(Route.id)
+        .filter(Route.name.in_(candidates))
+        .order_by(Route.id)
+        .scalar()
+    )
+
+
+def _prepare_block_order_data(data: dict, db: Session) -> dict:
+    """
+    철도 km과 KP는 같은 의미다.
+    legacy km 입력은 KP로, 신규 KP 입력은 legacy km으로 복사해 기존 화면과 새 baseline 렌더링을 함께 살린다.
+    """
+    route_id = data.get("route_id")
+    rail_route_id = data.get("rail_route_id")
+
+    if rail_route_id is None:
+        rail_route_id = _rail_route_id_from_legacy_route(db, route_id)
+        data["rail_route_id"] = rail_route_id
+    if route_id is None:
+        route_id = _legacy_route_id_from_rail_route(db, rail_route_id)
+        data["route_id"] = route_id
+
+    if data.get("start_kp") is None and data.get("start_km") is not None:
+        data["start_kp"] = data["start_km"]
+    if data.get("end_kp") is None and data.get("end_km") is not None:
+        data["end_kp"] = data["end_km"]
+    if data.get("start_km") is None and data.get("start_kp") is not None:
+        data["start_km"] = data["start_kp"]
+    if data.get("end_km") is None and data.get("end_kp") is not None:
+        data["end_km"] = data["end_kp"]
+
+    if data.get("rail_route_id") is None and data.get("route_id") is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="노선을 찾을 수 없습니다")
+    return data
+
+
+def _assert_can_register(
+    current_user: User,
+    route_id: int | None,
+    start_kp: float | None,
+    end_kp: float | None,
+    field: str,
+    db: Session,
+) -> None:
+    if route_id is None and current_user.role != "system_superuser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관할구간 검증용 legacy route가 없어 등록할 수 없습니다",
+        )
+    allowed, reason = can_register_block_order(
+        user=current_user,
+        route_id=route_id or 0,
+        start_km=start_kp,
+        end_km=end_kp,
+        request_field=field,
+        db=db,
+    )
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
+
+
 @router.get("", response_model=list[BlockOrderResponse])
 def list_block_orders(
     route_id: int | None = None,
+    rail_route_id: int | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     organization_id: int | None = None,
     field: str | None = None,
     start_km_from: float | None = None,
     end_km_to: float | None = None,
+    start_kp_from: float | None = None,
+    end_kp_to: float | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -30,6 +126,8 @@ def list_block_orders(
     q = db.query(BlockOrder)
     if route_id is not None:
         q = q.filter(BlockOrder.route_id == route_id)
+    if rail_route_id is not None:
+        q = q.filter(BlockOrder.rail_route_id == rail_route_id)
     if date_from is not None:
         q = q.filter(BlockOrder.work_date >= date_from)
     if date_to is not None:
@@ -39,9 +137,13 @@ def list_block_orders(
     if field is not None:
         q = q.filter(BlockOrder.field == field)
     if start_km_from is not None:
-        q = q.filter(BlockOrder.start_km >= start_km_from)
+        q = q.filter(BlockOrder.start_kp >= start_km_from)
     if end_km_to is not None:
-        q = q.filter(BlockOrder.end_km <= end_km_to)
+        q = q.filter(BlockOrder.end_kp <= end_km_to)
+    if start_kp_from is not None:
+        q = q.filter(BlockOrder.start_kp >= start_kp_from)
+    if end_kp_to is not None:
+        q = q.filter(BlockOrder.end_kp <= end_kp_to)
     return q.order_by(BlockOrder.work_date, BlockOrder.start_time).all()
 
 
@@ -52,16 +154,15 @@ def create_block_order(
     current_user: User = Depends(require_org_admin),
 ):
     """차단명령 등록 — org_admin 이상, 조직+분야+구간 검증"""
-    allowed, reason = can_register_block_order(
-        user=current_user,
-        route_id=body.route_id,
-        start_km=body.start_km,
-        end_km=body.end_km,
-        request_field=body.field,
+    data = _prepare_block_order_data(body.model_dump(), db)
+    _assert_can_register(
+        current_user=current_user,
+        route_id=data.get("route_id"),
+        start_kp=data.get("start_kp"),
+        end_kp=data.get("end_kp"),
+        field=data["field"],
         db=db,
     )
-    if not allowed:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
 
     # organization_id: system_superuser는 body에서, org_admin은 자기 조직
     org_id = (
@@ -71,7 +172,7 @@ def create_block_order(
     )
 
     order = BlockOrder(
-        **{k: v for k, v in body.model_dump().items() if k != "organization_id"},
+        **{k: v for k, v in data.items() if k != "organization_id"},
         organization_id=org_id,
         created_by=current_user.id,
     )
@@ -109,23 +210,34 @@ def update_block_order(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="수정 권한이 없습니다")
 
     # km·분야가 변경될 경우 재검증
-    new_start = body.start_km if body.start_km is not None else order.start_km
-    new_end   = body.end_km   if body.end_km   is not None else order.end_km
+    body_data = body.model_dump(exclude_unset=True)
+    data = _prepare_block_order_data(
+        {
+            "route_id": order.route_id,
+            "rail_route_id": order.rail_route_id,
+            "start_km": order.start_km,
+            "end_km": order.end_km,
+            "start_kp": order.start_kp,
+            "end_kp": order.end_kp,
+            **body_data,
+        },
+        db,
+    )
+    new_start = data.get("start_kp")
+    new_end = data.get("end_kp")
     new_field = body.field    if body.field     is not None else order.field
 
-    if body.start_km is not None or body.end_km is not None or body.field is not None:
-        allowed, reason = can_register_block_order(
-            user=current_user,
-            route_id=order.route_id,
-            start_km=new_start,
-            end_km=new_end,
-            request_field=new_field,
+    if {"route_id", "rail_route_id", "start_km", "end_km", "start_kp", "end_kp", "field"} & body_data.keys():
+        _assert_can_register(
+            current_user=current_user,
+            route_id=data.get("route_id"),
+            start_kp=new_start,
+            end_kp=new_end,
+            field=new_field,
             db=db,
         )
-        if not allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
 
-    for key, value in body.model_dump(exclude_unset=True).items():
+    for key, value in data.items():
         setattr(order, key, value)
     db.commit()
     db.refresh(order)
@@ -133,11 +245,14 @@ def update_block_order(
 
 
 class BulkBlockOrderItem(BaseModel):
-    route_id: int
+    route_id: int | None = None
+    rail_route_id: int | None = None
     organization_id: int | None = None
     direction: str
     start_km: float | None = None   # 전차선 단전 등 km 없는 경우 None
     end_km: float | None = None
+    start_kp: float | None = None
+    end_kp: float | None = None
     section_note: str | None = None # 단전구간명 (예: "청도SP~밀양SS")
     work_date: date                 # Pydantic이 "YYYY-MM-DD" → date 자동 변환
     start_time: str                 # "HH:MM"
@@ -189,18 +304,15 @@ def bulk_create_block_orders(
     for idx, item in enumerate(body, 1):
         row_label = f"행 {idx} ({item.work_date} {item.start_time})"
         try:
-            allowed, reason = can_register_block_order(
-                user=current_user,
-                route_id=item.route_id,
-                start_km=item.start_km,
-                end_km=item.end_km,
-                request_field=item.field,
+            data = _prepare_block_order_data(item.model_dump(), db)
+            _assert_can_register(
+                current_user=current_user,
+                route_id=data.get("route_id"),
+                start_kp=data.get("start_kp"),
+                end_kp=data.get("end_kp"),
+                field=data["field"],
                 db=db,
             )
-            if not allowed:
-                failed += 1
-                errors.append(f"{row_label}: {reason}")
-                continue
 
             org_id = (
                 item.organization_id
@@ -214,12 +326,15 @@ def bulk_create_block_orders(
                 return time_type(int(parts[0]), int(parts[1]))
 
             order = BlockOrder(
-                route_id=item.route_id,
+                route_id=data.get("route_id"),
+                rail_route_id=data.get("rail_route_id"),
                 organization_id=org_id,
-                direction=item.direction,
-                start_km=item.start_km,
-                end_km=item.end_km,
-                section_note=item.section_note,
+                direction=data["direction"],
+                start_km=data.get("start_km"),
+                end_km=data.get("end_km"),
+                start_kp=data.get("start_kp"),
+                end_kp=data.get("end_kp"),
+                section_note=data.get("section_note"),
                 work_date=item.work_date,
                 start_time=_to_time(item.start_time),
                 end_time=_to_time(item.end_time),

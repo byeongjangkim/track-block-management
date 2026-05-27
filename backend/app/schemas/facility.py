@@ -1,17 +1,28 @@
 from pydantic import BaseModel, field_validator
 
-VALID_TYPES = {"STATION", "TUNNEL", "BRIDGE", "OVERPASS", "CROSSING", "SUBSTATION", "JUNCTION"}
+# 대분류
+VALID_TYPES = {"역", "변전소", "구조물", "소속경계"}
+
+# 소분류 (station_type)
+VALID_SUBTYPES = {
+    "역":       {"관리역", "보통역", "무인역", "신호장", "신호소"},
+    "변전소":   {"ss", "sp", "ssp", "atp", "pp"},
+    "구조물":   {"터널", "교량", "과선교", "건널목", "분기"},
+    "소속경계": {"지역본부", "사업소"},
+}
+
 VALID_DIRECTIONS = {"UP", "DOWN", "BOTH"}
 
 
 class FacilityCreate(BaseModel):
     type: str
+    station_type: str | None = None   # 소분류
     name: str
     km: float
-    km_end: float | None = None          # 종료 거리정 (TUNNEL·BRIDGE·OVERPASS)
-    lat: float | None = None             # 시작 위도 (NULL이면 route_geometry km 보간)
-    lon: float | None = None             # 시작 경도
-    direction: str | None = None         # UP | DOWN | BOTH | None
+    km_end: float | None = None       # 종료 거리정 (구조물 구간)
+    lat: float | None = None
+    lon: float | None = None
+    direction: str | None = None      # UP | DOWN | BOTH | None
     has_station_map: bool = False
     note: str | None = None
 
@@ -19,7 +30,7 @@ class FacilityCreate(BaseModel):
     @classmethod
     def validate_type(cls, v: str) -> str:
         if v not in VALID_TYPES:
-            raise ValueError(f"type은 {VALID_TYPES} 중 하나여야 합니다")
+            raise ValueError(f"type은 {sorted(VALID_TYPES)} 중 하나여야 합니다")
         return v
 
     @field_validator("direction")
@@ -32,6 +43,7 @@ class FacilityCreate(BaseModel):
 
 class FacilityUpdate(BaseModel):
     type: str | None = None
+    station_type: str | None = None
     name: str | None = None
     km: float | None = None
     km_end: float | None = None
@@ -45,7 +57,7 @@ class FacilityUpdate(BaseModel):
     @classmethod
     def validate_type(cls, v: str | None) -> str | None:
         if v is not None and v not in VALID_TYPES:
-            raise ValueError(f"type은 {VALID_TYPES} 중 하나여야 합니다")
+            raise ValueError(f"type은 {sorted(VALID_TYPES)} 중 하나여야 합니다")
         return v
 
     @field_validator("direction")
@@ -60,6 +72,7 @@ class FacilityResponse(BaseModel):
     id: int
     route_id: int
     type: str
+    station_type: str | None
     name: str
     km: float
     km_end: float | None

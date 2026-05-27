@@ -1,202 +1,147 @@
-# maps — 노선도 파이프라인
-
-**역할**: 노선 GIS 데이터 관리 → route_geometry DB → D3.js 전국 노선도 렌더링
+# maps — GIS 파이프라인
 
 ---
 
-## 핵심 원칙
+## 역할 구분
 
-1. **DB SOT**: 모든 GIS 데이터는 SQLite `route_geometry` 테이블에 저장. 파일로 관리하지 않는다.
-2. **source 컬럼으로 레이어 분리**: `source='user'`(공식 데이터)와 `source='shp'`(참조 형태 데이터)를 동일 테이블에서 구분 관리.
-3. **user 데이터 우선**: user 데이터가 있는 노선은 user 레이어를 표시. shp 데이터는 user 업로드 완료 후 단계적으로 삭제.
-4. **노선별 show/hide**: 전국조망·소속 선택 상태와 무관하게 노선별 표시/숨김 토글 가능.
-
----
-
-## route_geometry 테이블 구조
-
-```sql
-CREATE TABLE route_geometry (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    route_code TEXT    NOT NULL,
-    source     TEXT    NOT NULL DEFAULT 'shp',  -- 'shp' | 'user'
-    lod        TEXT    NOT NULL,                -- 'high' | 'mid' | 'low'
-    segment    INTEGER NOT NULL DEFAULT 0,      -- 선분 번호 (아래 기준 참조)
-    seq        INTEGER NOT NULL,               -- 선분 내 좌표 순번
-    lat        REAL    NOT NULL,               -- WGS84 위도
-    lon        REAL    NOT NULL,               -- WGS84 경도
-    km         REAL,                           -- KORAIL 거리정 (user만 입력, shp는 NULL)
-    UNIQUE (route_code, source, lod, segment, seq)
-);
-```
-
-### source 별 특성
-
-| source | 입력 방법 | km | 연속성 | 용도 |
-|---|---|---|---|---|
-| `shp` | 국가기본도 SHP 파싱 | NULL | ❌ 조각남 | 형태 참조용 (점선 표시) |
-| `user` | 관리자 CSV 직접 업로드 | ✅ 권장 (NULL 허용) | ✅ 연속 | 공식 노선도 (실선 표시) |
-
----
-
-## segment 번호 기준
-
-철도 노선은 시점(km 0.0)~종점 구간의 선형 구조이며, 복선·역구내·분기선 등으로 구성된다.
-`segment` 컬럼은 이 구조를 표현하기 위한 정수 식별자이다.
-
-### 일반 노선 (복선·복복선)
-
-| segment | 의미 | 비고 |
+| 데이터 종류 | 저장 위치 | 설명 |
 |---|---|---|
-| `0` | **선로 중앙선** (선로 중심, 본선 대표) | SHP 데이터 기준값. 노선도 기본 표시 |
-| `1` | **하선** (Down, 종점 방향) | 상세 선형 추가 시 |
-| `2` | **상선** (Up, 기점 방향) | 상세 선형 추가 시 |
-| `3+` | **3복선 이상** 추가 선로 | 필요 시 순차 추가 |
-
-### 고속선 (KTX)
-
-| segment | 의미 |
-|---|---|
-| `0` | 선로 중앙선 |
-| `1` | T1 (하선, 서울 출발) |
-| `2` | T2 (상선, 부산 출발) |
-
-### 역구내 (본선 + 측선)
-
-| segment | 의미 |
-|---|---|
-| `0` | 본선 (중앙선 연속) |
-| 홀수 (1, 3, 5, …) | 상선측 역구내 선 (역 번호 기준) |
-| 짝수 (2, 4, 6, …) | 하선측 역구내 선 |
-
-> 역구내 선형은 Phase 3 이후 별도 레이어로 추가 예정.
-
-### 적용 원칙
-
-- **Phase 1 현재**: `segment=0` (선로 중앙선) 만 사용. SHP 데이터가 선로 중심값이므로 그대로 활용.
-- SHP import 시 linemerge 결과 연결 불가 구간이 `segment=1, 2, …`로 자동 분리됨 — 이는 임시 조각 번호이며 공식 segment 번호와 무관.
-- user CSV 업로드 시에는 `segment=0`으로 통일하여 입력 (지선·측선은 별도 segment).
-- 향후 하선/상선 선형 추가 시 `segment=1(하선), 2(상선)` 으로 CSV 직접 입력.
+| **노선 geometry** | `route_geometry` DB 테이블 | SHP·CSV 입력, km 보간, LOD 자동 생성 |
+| **시도·시군구 경계** | `maps/data/*.geojson` 정적 파일 | NGII 데이터 전처리, 서버 파일 서빙 |
 
 ---
 
----
+## 1. 노선 geometry (route_geometry 테이블)
 
-## 데이터 흐름
+### source 컬럼으로 레이어 분리
 
-### 경로 A — SHP import (source='shp', 형태 참조용)
+| source | 입력 | km | 표시 |
+|---|---|---|---|
+| `shp` | 국가기본도 SHP 파싱 | NULL | 점선·흐린 색 (참조용) |
+| `user` | 관리자 CSV 업로드 | 필수 | 실선·진한 색 (공식) |
 
-```
-국가기본도_철도중심선 SHP (maps/raw/railway_line/TN_RLROAD_CTLN)
-  좌표계: EPSG:5179 → EPSG:4326 변환
-  필터: KORAIL 고속(RRC001) + 보통(RRC002) + 도시(RRC004) 철도중심선(RRT001)
-    ↓ linemerge → 다중 segment 분리 (연결 불가 구간 별도 segment)
-    ↓
-route_geometry (source='shp', km=NULL)
-  → D3.js: 점선·흐린 색으로 표시 (참고용)
-  → user 데이터 업로드 완료 후 삭제 예정
-```
+**원칙:** user 데이터가 있는 노선은 user 레이어만 표시. shp 데이터는 user 업로드 완료 후 삭제.
 
-**실행:**
+### segment 번호 기준
+
+| segment | 의미 |
+|---|---|
+| `0` | 선로 중앙선 (본선 대표, Phase 1 현재 이것만 사용) |
+| `1` | 하선(Down) / T1 (고속) |
+| `2` | 상선(Up) / T2 (고속) |
+| `3+` | 추가 선로, 역구내 측선 |
+
+### 데이터 흐름
+
+**경로 A — SHP import (source='shp')**
 ```bash
 cd maps && source ../backend/.venv/bin/activate
-python3 pipeline/import_shp_to_geometry.py --route gyeongbu   # 단일
-python3 pipeline/import_shp_to_geometry.py --all               # 전체
-python3 pipeline/import_shp_to_geometry.py --list              # 목록
+python3 pipeline/import_shp_to_geometry.py --route gyeongbu  # 단일
+python3 pipeline/import_shp_to_geometry.py --all              # 전체
 ```
 
-**웹 UI:** 백엔드 CLI 또는 API(`POST /api/v1/admin/shp/import`) 직접 호출 (UI는 제거됨)
-
----
-
-### 경로 B — CSV 직접 업로드 (source='user', 공식 데이터)
-
+**경로 B — CSV 직접 업로드 (source='user')**
 ```
-KORAIL 선로제원표 / 직접 측정 데이터
-  → CSV 작성 (segment, seq, lat, lon, km)
-  → 노선도 관리 → "노선도 업로드" → API
-    ↓
-route_geometry (source='user', km=입력값)
-  → D3.js: 실선·진한 색으로 표시 (공식)
-  → km 기반 관할구간 슬라이싱 가능
-  → 해당 노선의 shp 데이터는 별도 관리 후 삭제
+CSV 컬럼: segment, seq, lat, lon, km
 ```
+- 웹 UI: 노선도 관리 → CSV 업로드
+- 업로드 시 기존 user 데이터 교체, LOD(mid·low) 자동 생성
 
-**CSV 템플릿 컬럼:**
-```
-segment,seq,lat,lon,km
-```
+### LOD 전환 기준 (D3 줌 스케일 k 기준)
 
-| 컬럼 | 설명 | 예시 |
+| D3 줌 k | LOD | 목표 간격 |
 |---|---|---|
-| segment | 선분 번호 (본선=0, 지선=1,2,...) | 0 |
-| seq | 선분 내 좌표 순번 (0부터) | 0, 1, 2, ... |
-| lat | WGS84 위도 | 37.5547 |
-| lon | WGS84 경도 | 126.9707 |
-| km | KORAIL 공식 거리정 (소수점 1자리) | 0.0, 0.3, 0.8, ... |
-
-- 노선 코드는 업로드 URL(`/admin/routes/{route_code}/geometry-upload`)로 결정
-- 업로드 시 해당 노선의 기존 `source='user'` 데이터를 교체
-- LOD(mid, low)는 서버에서 Douglas-Peucker로 자동 생성
-
-**웹 UI:** 노선도 관리(`/admin/route-geometry`) → [CSV 다운로드] → 편집 → [CSV 업로드]
+| k < 3 | `low` | 10 km |
+| 3 ≤ k < 8 | `mid` | 2 km |
+| k ≥ 8 | `high` | 500 m |
 
 ---
 
-## LOD-줌-km 기준 (D3.js 줌 스케일 k 기준)
+## 2. 배경 지도 — 시도·시군구 경계 (정적 GeoJSON)
 
-초기 화면(전국 조망)의 줌 스케일 k ≈ 0.95.  
-D3 Mercator 기준 초기 스케일 s₀ ≈ 3.7 px/km.
+### 파일 구성
 
-### 줌 구간별 LOD 전환
+```
+maps/data/
+├── korea_map_level1.geojson   # 17개 시도 경계 (315 KB)
+└── korea_map_level2.geojson   # 255개 시군구 경계 (1.2 MB, NGII 38MB 원본에서 단순화)
+```
 
-| D3 줌 k | 화면 분해능 (1km→px) | LOD | km 간격 목표 | 대상 뷰 |
-|---|---|---|---|---|
-| k < 3 | < 11 px/km | `low` | **10km** | 전국·광역 조망 |
-| 3 ≤ k < 8 | 11~30 px/km | `mid` | **2km** | 지역본부 권역 |
-| k ≥ 8 | ≥ 30 px/km | `high` | **500m** | 노선·구간 정밀 |
+### 생성 방식 — Level 1 (시도)
 
-- RailwayMap.tsx 줌 핸들러에서 `zoomToLod(k)` 함수로 LOD를 자동 판단 후 `currentLod` state 변경
-- `currentLod` 변경 시 `fetchAllGeometry(lod)` 재호출 → 노선 경로만 교체 (레이어 구조·줌 위치 유지)
-- LOD 전환 시 프로젝션은 유지 (`projRef`), 현재 줌 위치는 `savedTransformRef`로 복원
+`korea_map_level1.geojson`은 **`korea_map_level2.geojson`(시군구)을 시도 코드별로 `unary_union`하여 생성**.
 
-### CSV 입력 기준 (source='user')
+```python
+# sig_cd 앞 2자리로 그룹화 → shapely.ops.unary_union() → simplify(0.0005) → strip_holes()
+```
 
-**입력 CSV = high LOD 원본** (500m 간격 권장), mid/low는 업로드 시 자동 생성.
+이 방식을 사용하는 이유:
+- 시군구 경계를 병합하면 내부 경계선이 완전히 제거되어 올바른 시도 외곽선만 남음
+- `provinces-geo.json` 등 외부 소스는 인천-경기도 경계가 소실되거나 self-intersecting 오류 발생
+- Level 2 NGII 데이터(sig_cd 코드 정확)가 가장 신뢰할 수 있는 소스
 
-| LOD | tolerance | 자동 생성 결과 | 비고 |
-|---|---|---|---|
-| `high` | None (원본) | 500m 간격 유지 | CSV 직접 입력 |
-| `mid` | 0.005° ≈ 550m | 직선 구간 제거 → 2km 간격 목표 | Douglas-Peucker 자동 |
-| `low` | 0.02° ≈ 2.2km | 주요 굴곡만 유지 → 10km 간격 목표 | Douglas-Peucker 자동 |
+후처리:
+- `area < 0.0001` 조각 제거 (한강 하중도, 연안 미소 섬 등)
+- `strip_holes()`: 내부 hole 제거 (한강·저수지 등 수계가 hole로 생성되는 문제 해결)
 
-### CSV 다운로드 우선순위
+재생성 명령:
+```bash
+cd backend && source .venv/bin/activate && cd ..
+python3 - << 'EOF'
+# maps/data/korea_map_level2.geojson → korea_map_level1.geojson
+# (unary_union + simplify + strip_holes)
+EOF
+```
+> 재생성이 필요한 경우: database/seeds/routes.py 참고, 또는 이 세션 기록 참조
 
-노선도 관리에서 [CSV 다운로드] 클릭 시:
+### API
 
-| 조건 | 반환 내용 |
+```
+GET /api/v1/map/sigungu?level=1    # 시도 17개만
+GET /api/v1/map/sigungu?level=2    # 시도 17개 + 시군구 255개
+```
+
+- 서버 `@lru_cache(maxsize=2)`로 캐시 → **파일 변경 시 백엔드 재시작 필수**
+- 파일 경로: `Path(__file__).resolve().parent×5 / "maps" / "data"`
+
+### GeoJSON Feature 구조
+
+```json
+{
+  "properties": {
+    "sig_cd":      "28",         // 시도 코드 (Level 1: 2자리, Level 2: 5자리)
+    "name":        "인천광역시",
+    "full_name":   "인천광역시",
+    "admin_level": 1,            // 1=시도, 2=시군구
+    "centroid":    [126.38, 37.57]
+  }
+}
+```
+
+### 렌더링 규칙 (D3.js)
+
+| 항목 | Level 1 (시도) | Level 2 (시군구) |
+|---|---|---|
+| 채움 | 시도별 연한 색 (불투명도 0.15) | 없음 |
+| 선 색 | `#6b8299` | `#8fa5b8` |
+| 선 굵기 | 1.0 px | 0.5 px |
+| 표시 조건 | 항상 | zoom ≥ 1.5 |
+
+시도별 채움색: 4색 배분 원칙 (인접 시도 구분)
+- 연장밋빛(서울·세종·경남·강원), 연파랑(부산·충북·전남·제주)
+- 연보라(대구·울산·전북), 연에메랄드(인천·충남·경북)
+- 연노랑(광주·대전·경기)
+
+### 핵심 교훈 (시행착오)
+
+| 실패한 접근 | 이유 |
 |---|---|
-| USER geometry 있음 | 현재 USER high LOD 데이터 그대로 반환 |
-| USER 없음, SHP 있음 | SHP 좌표 + 역 GPS 앵커 기반 km 추정값 포함 |
-| USER·SHP 없음, 역 GPS 있음 | 역 앵커 포인트만 포함 |
-| 모두 없음 | 빈 템플릿 + 헤더 주석만 |
+| `provinces-geo.json` 단순화 버전 사용 | 인천-경기도 경계 소실 |
+| 사용자 정의 RDP 적용 | self-intersecting 폴리곤 생성 (TopologyException) |
+| `sigungu_geometry` DB 테이블 유지 | 대용량(22,962행), 정적 GeoJSON이 훨씬 효율적 |
+| 외부 province-level GeoJSON 사용 | 내부 구/시/군 경계 미병합으로 망가진 경계 표시 |
 
-모든 경우 CSV 헤더에 노선 관리역 목록(km 기준값)과 LOD 입력 기준 주석 포함.
-
----
-
-## 노선 레이어 토글 (BlockMapPage)
-
-BlockMapPage 사이드바의 [지도 설정 ▼] 섹션 내에 노선별 show/hide 체크박스를 제공한다.
-
-- 날짜·노선 필터, 조직 선택과 **무관하게** 항상 노선 목록 표시 가능
-- D3.js는 `hiddenRoutes: Set<string>` 집합에 없는 route_code만 렌더링
-- `hiddenRoutes` 변경 시 D3 path `display` 속성만 갱신 (전체 재초기화 없음)
-- **그룹 분류:**
-  - 고속철도: `gyeongbu_high`, `honam_high`, `gangneung`, `donghae_ktx`, `jungbu_naeryuk`, `suseo_pyeongtaek`
-  - 지하철: `suin`, `bundang`
-  - 보통철도: 나머지 전체
-- 초기 상태: 전체 표시
+**올바른 방법: Level 2(시군구) → `unary_union` → Level 1(시도) 생성**
 
 ---
 
@@ -205,48 +150,20 @@ BlockMapPage 사이드바의 [지도 설정 ▼] 섹션 내에 노선별 show/hi
 ```
 maps/
 ├── pipeline/
-│   ├── import_shp_to_geometry.py      # SHP → route_geometry source='shp' (신규 노선 등록용)
-│   └── seed_org_viewport.py           # org_viewport 초기값 DB 입력
+│   ├── add_route.py                  # 신규 노선 추가 통합
+│   ├── download_osm.py               # Overpass API → osm_korea.geojson
+│   ├── extract_routes.py             # osm_korea.geojson → 노선별 GeoJSON 분리
+│   ├── import_geometry.py            # 노선 GeoJSON → route_geometry DB
+│   ├── import_shp_to_geometry.py     # SHP → route_geometry source='shp'
+│   └── seed_org_viewport.py          # org_viewport 초기값 DB 입력
+├── data/
+│   ├── korea_map_level1.geojson      # 17개 시도 (unary_union 생성)
+│   ├── korea_map_level2.geojson      # 255개 시군구 (NGII 기반)
+│   └── stations.csv                  # 역 마스터 (replace_stations.py 입력)
 └── raw/
     └── railway_line/
-        └── TN_RLROAD_CTLN.*           # 국가기본도_철도중심선 SHP (.gitignore)
+        └── TN_RLROAD_CTLN.*          # 국가기본도 SHP (.gitignore)
 ```
-
----
-
-## 구현 단계 및 현황
-
-| 단계 | 내용 | 상태 |
-|---|---|---|
-| **1. 노선 DB 구축** | routes 테이블 — 51개 노선 등록 | ✅ 완료 |
-| **2. SHP import** | source='shp' 49개 노선, 다중 segment | ✅ 완료 |
-| **3. 노선 레이어 토글** | BlockMapPage 사이드바 노선별 show/hide (그룹 분류) | ✅ 완료 |
-| **4. 노선도 CSV 업로드** | source='user' CSV 업로드, 템플릿/다운로드 | ✅ 완료 |
-| **5. SHP 삭제 기능** | 노선별 source='shp' 데이터 삭제 UI | ✅ 완료 |
-| **6. user/shp 레이어 분리 렌더링** | user=실선, shp=점선 표시 | ✅ 완료 |
-| **7. 시설물 레이어 (km 보간)** | user geometry km 기반 좌표 보간 → D3 렌더링 | ✅ 완료 |
-| **8. 차단구간 오버레이** | start_km~end_km → user geometry 보간 → GeoJSON 오버레이 | ✅ 완료 |
-| **9. 경부선 user geometry 등록** | SHP → 위도 기반 정렬 + Haversine km 계산 → CSV (12,738pts) | ✅ 완료 |
-| **10. 관리역 GPS 앵커 등록** | OSM Overpass API 배치 조회 → 75개 역 GPS 취득 → facilities 등록 | ✅ 완료 |
-| **11. LOD 자동 전환** | 줌 k < 3 → low, 3~8 → mid, ≥ 8 → high | ✅ 완료 |
-| **12. CSV 다운로드 개선** | geometry-template → USER/SHP/앵커 우선순위별 실데이터 반환 | ✅ 완료 |
-| **13. LOD tolerance 재조정** | low 0.02°(10km), mid 0.005°(2km), high None(500m) | ✅ 완료 |
-| **14. km 기반 관할구간 슬라이싱** | 전 노선 user 업로드 완료 후 활성화 | ⬜ 대기 |
-| **15. 노선별 user CSV 입력** | 각 노선 CSV 다운로드 → 공식 km 수정 → 업로드 → SHP 삭제 | 🔄 진행 중 |
-
----
-
-## SHP 데이터 한계 (참고)
-
-| 항목 | 내용 |
-|---|---|
-| km=NULL | SHP에 KORAIL 공식 거리정 없음 → 관할구간 슬라이싱 불가 |
-| 선분 조각남 | 경부선 low LOD 기준 69개 조각 → linemerge로 완전 해결 불가 |
-| 방향 없음 | 상선/하선(UP/DOWN) 구분 정보 없음 |
-| 일부 미수록 | 가야선·가은선 SHP 미수록 |
-| 위상 불일치 | 인접 선분 끝점 좌표가 정확히 일치하지 않음 |
-
-→ **위 한계는 user CSV 직접 입력으로만 해결 가능**
 
 ---
 
@@ -254,7 +171,6 @@ maps/
 
 | 문서 | 내용 |
 |---|---|
-| [../CLAUDE.md](../CLAUDE.md) | 프로젝트 전체 개요, 노선도 GIS 아키텍처 요약 |
-| [ROUTE_MANAGEMENT.md](ROUTE_MANAGEMENT.md) | 51개 노선 등록 현황, SHP→user 전환 절차 |
-| [../backend/CLAUDE.md](../backend/CLAUDE.md) | geometry 관리 API 엔드포인트 |
-| [../frontend/UI_UX.md](../frontend/UI_UX.md) | 노선도 렌더링 UI, source별 색상·스타일 |
+| [ROUTE_MANAGEMENT.md](ROUTE_MANAGEMENT.md) | 51개 노선 등록 현황 |
+| [../database/CLAUDE.md](../database/CLAUDE.md) | route_geometry 스키마 상세 |
+| [../backend/CLAUDE.md](../backend/CLAUDE.md) | /map/sigungu API, geometry 관리 API |

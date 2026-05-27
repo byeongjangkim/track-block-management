@@ -47,6 +47,8 @@ ROUTES = [
      "up_direction": "구로 방향", "down_direction": "인천 방향"},
     {"code": "gyeongchun",    "name": "경춘선",         "start_km": 0.0, "end_km": 80.7,
      "up_direction": "망우 방향", "down_direction": "춘천 방향"},
+    {"code": "ansan",         "name": "안산선",         "start_km": 0.0, "end_km": 46.4,
+     "up_direction": "금정 방향", "down_direction": "인천 방향"},
     {"code": "gyeonggang",    "name": "경강선",         "start_km": 0.0, "end_km": 57.1,
      "up_direction": "판교 방향", "down_direction": "여주 방향"},
     # ── 고속선 ────────────────────────────────────────────────────────────

@@ -7,9 +7,13 @@ map.py — 노선도 geometry API
   GET /map/organizations/{id}/boundaries  ← 조직 관할 구간 경계
   GET /map/organizations/{id}/viewport    ← 조직 초기 뷰 설정
   GET /map/block-orders/segments          ← 차단명령 구간 GeoJSON (날짜 필터)
+  GET /map/sigungu?level=1|2              ← 시도/시군구 경계 GeoJSON (정적 파일)
 """
 
+import json
 from datetime import date as date_type
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
@@ -20,6 +24,7 @@ from app.models.block_order import BlockOrder
 from app.models.facility import Facility
 from app.models.org_viewport import OrgViewport
 from app.models.organization import Organization, OrganizationRouteRange
+from app.models.rail_baseline import RailRoute, RailRouteRegionBoundary
 from app.models.route import Route
 from app.models.route_geometry import RouteGeometry
 from app.models.user import User
@@ -302,7 +307,122 @@ def _km_range_coords(db: Session, route_code: str, start_km: float, end_km: floa
     return coords
 
 
+def _interpolate_rail_kp(db: Session, rail_route_id: int, kp: float) -> tuple[float, float] | None:
+    rows = db.execute(
+        text("""
+            SELECT lat, lon, kp
+            FROM rail_baseline_points
+            WHERE rail_route_id=:rail_route_id
+              AND is_interpolation_anchor = 1
+            ORDER BY segment_no, kp, seq
+        """),
+        {"rail_route_id": rail_route_id},
+    ).fetchall()
+
+    if not rows:
+        return None
+    if kp <= rows[0].kp:
+        return (rows[0].lat, rows[0].lon)
+    if kp >= rows[-1].kp:
+        return (rows[-1].lat, rows[-1].lon)
+
+    for i in range(len(rows) - 1):
+        a, b = rows[i], rows[i + 1]
+        if a.kp <= kp <= b.kp:
+            if b.kp == a.kp:
+                return (a.lat, a.lon)
+            t = (kp - a.kp) / (b.kp - a.kp)
+            return (a.lat + t * (b.lat - a.lat), a.lon + t * (b.lon - a.lon))
+
+    return None
+
+
+def _rail_kp_range_coords(db: Session, rail_route_id: int, start_kp: float, end_kp: float) -> list[list[float]]:
+    start, end = sorted((start_kp, end_kp))
+    rows = db.execute(
+        text("""
+            SELECT lat, lon, kp
+            FROM rail_baseline_points
+            WHERE rail_route_id=:rail_route_id
+              AND is_render_anchor = 1
+            ORDER BY segment_no, kp, seq
+        """),
+        {"rail_route_id": rail_route_id},
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    coords: list[list[float]] = []
+    start_pt = _interpolate_rail_kp(db, rail_route_id, start)
+    if start_pt:
+        coords.append([start_pt[1], start_pt[0]])
+
+    for r in rows:
+        if start < r.kp < end:
+            coord = [r.lon, r.lat]
+            if not coords or coords[-1] != coord:
+                coords.append(coord)
+
+    end_pt = _interpolate_rail_kp(db, rail_route_id, end)
+    if end_pt:
+        coord = [end_pt[1], end_pt[0]]
+        if not coords or coords[-1] != coord:
+            coords.append(coord)
+
+    return coords
+
+
 # ── 노선 시설물 GeoJSON ───────────────────────────────────────────────────
+
+@router.get("/rail-route-region-boundaries")
+def get_rail_route_region_boundaries(
+    rail_route_id: int | None = Query(None, description="rail_routes 노선 ID 필터"),
+    organization_id: int | None = Query(None, description="지역본부 organization ID 필터"),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = (
+        db.query(RailRouteRegionBoundary, RailRoute, Organization)
+        .join(RailRoute, RailRoute.id == RailRouteRegionBoundary.rail_route_id)
+        .join(Organization, Organization.id == RailRouteRegionBoundary.organization_id)
+    )
+    if rail_route_id is not None:
+        q = q.filter(RailRouteRegionBoundary.rail_route_id == rail_route_id)
+    if organization_id is not None:
+        q = q.filter(RailRouteRegionBoundary.organization_id == organization_id)
+
+    rows = q.order_by(
+        RailRouteRegionBoundary.rail_route_id,
+        RailRouteRegionBoundary.start_kp,
+        RailRouteRegionBoundary.organization_id,
+    ).all()
+
+    features = []
+    for boundary, route, org in rows:
+        coords = _rail_kp_range_coords(db, boundary.rail_route_id, boundary.start_kp, boundary.end_kp)
+        if len(coords) < 2:
+            continue
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "id": boundary.id,
+                "organization_id": boundary.organization_id,
+                "organization_name": org.name,
+                "rail_route_id": boundary.rail_route_id,
+                "route_code": route.korail_route_code,
+                "route_name": route.name,
+                "boundary_type": boundary.boundary_type,
+                "start_kp": boundary.start_kp,
+                "end_kp": boundary.end_kp,
+                "source_type": boundary.source_type,
+                "source_id": boundary.source_id,
+            },
+            "geometry": {"type": "LineString", "coordinates": coords},
+        })
+
+    return {"type": "FeatureCollection", "features": features}
+
 
 @router.get("/routes/{code}/facilities")
 def get_route_facilities(
@@ -334,6 +454,7 @@ def get_route_facilities(
         props = {
             "id":              f.id,
             "type":            f.type,
+            "station_type":    f.station_type,
             "name":            f.name,
             "km":              f.km,
             "km_end":          f.km_end,
@@ -344,7 +465,7 @@ def get_route_facilities(
             "route_name":      route.name,
         }
 
-        if f.km_end is not None and f.type in ("TUNNEL", "BRIDGE", "OVERPASS"):
+        if f.km_end is not None and f.type == "구조물":
             coords = _km_range_coords(db, code, f.km, f.km_end)
             if len(coords) < 2:
                 geometry = {"type": "Point", "coordinates": [start_coord[1], start_coord[0]]}
@@ -363,40 +484,62 @@ def get_route_facilities(
 @router.get("/block-orders/segments")
 def get_block_order_segments(
     work_date: date_type | None = Query(None, description="조회 날짜 (YYYY-MM-DD), 미입력 시 오늘"),
-    route_id: int | None = Query(None, description="노선 ID 필터"),
+    route_id: int | None = Query(None, description="legacy 노선 ID 필터"),
+    rail_route_id: int | None = Query(None, description="rail_routes 노선 ID 필터"),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     from datetime import date as today_date
     target_date = work_date or today_date.today()
 
-    q = db.query(BlockOrder, Route).join(Route, BlockOrder.route_id == Route.id).filter(
-        BlockOrder.work_date == target_date
-    )
+    q = db.query(BlockOrder).filter(BlockOrder.work_date == target_date)
     if route_id is not None:
         q = q.filter(BlockOrder.route_id == route_id)
+    if rail_route_id is not None:
+        q = q.filter(BlockOrder.rail_route_id == rail_route_id)
 
-    rows = q.order_by(BlockOrder.route_id, BlockOrder.start_km).all()
+    rows = q.order_by(BlockOrder.rail_route_id, BlockOrder.route_id, BlockOrder.start_kp).all()
 
     features = []
-    for bo, route in rows:
-        if bo.start_km is None and bo.end_km is None:
+    for bo in rows:
+        legacy_route = db.query(Route).filter(Route.id == bo.route_id).first() if bo.route_id else None
+        rail_route = (
+            db.query(RailRoute).filter(RailRoute.id == bo.rail_route_id).first()
+            if bo.rail_route_id
+            else None
+        )
+        route_name = rail_route.name if rail_route else (legacy_route.name if legacy_route else None)
+        route_code = (
+            rail_route.korail_route_code
+            if rail_route
+            else (legacy_route.code if legacy_route else None)
+        )
+        start_kp = bo.start_kp if bo.start_kp is not None else bo.start_km
+        end_kp = bo.end_kp if bo.end_kp is not None else bo.end_km
+
+        if start_kp is None and end_kp is None:
             section_type = "power_cut"
             f_start = db.query(Facility).filter(Facility.id == bo.start_facility_id).first() \
                 if bo.start_facility_id else None
             f_end   = db.query(Facility).filter(Facility.id == bo.end_facility_id).first() \
                 if bo.end_facility_id else None
-            if f_start is None or f_end is None:
+            if f_start is None or f_end is None or legacy_route is None:
                 continue
-            coords = _km_range_coords(db, route.code, f_start.km, f_end.km)
+            coords = _km_range_coords(db, legacy_route.code, f_start.km, f_end.km)
             display_km = f"{f_start.km}~{f_end.km}"
             section_note = bo.section_note or f"{f_start.name}~{f_end.name}"
         else:
             section_type = "normal"
-            if bo.start_km is None or bo.end_km is None:
+            if start_kp is None or end_kp is None:
                 continue
-            coords = _km_range_coords(db, route.code, bo.start_km, bo.end_km)
-            display_km = f"{bo.start_km}~{bo.end_km}"
+            coords = (
+                _rail_kp_range_coords(db, bo.rail_route_id, start_kp, end_kp)
+                if bo.rail_route_id
+                else []
+            )
+            if len(coords) < 2 and legacy_route is not None:
+                coords = _km_range_coords(db, legacy_route.code, start_kp, end_kp)
+            display_km = f"{start_kp}~{end_kp}"
             section_note = bo.section_note
 
         if len(coords) < 2:
@@ -407,12 +550,15 @@ def get_block_order_segments(
             "properties": {
                 "id":              bo.id,
                 "route_id":        bo.route_id,
-                "route_code":      route.code,
-                "route_name":      route.name,
+                "rail_route_id":   bo.rail_route_id,
+                "route_code":      route_code,
+                "route_name":      route_name,
                 "direction":       bo.direction,
                 "section_type":    section_type,
                 "start_km":        bo.start_km,
                 "end_km":          bo.end_km,
+                "start_kp":        start_kp,
+                "end_kp":          end_kp,
                 "section_note":    section_note,
                 "display_km":      display_km,
                 "work_date":       bo.work_date.isoformat(),
@@ -426,3 +572,27 @@ def get_block_order_segments(
         })
 
     return {"type": "FeatureCollection", "features": features, "work_date": target_date.isoformat()}
+
+
+# ── 시군구 배경 지도 (정적 GeoJSON 파일) ──────────────────────────────────────
+
+_MAP_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent / "maps" / "data"
+
+
+@lru_cache(maxsize=2)
+def _load_geojson(filename: str) -> dict:
+    path = _MAP_DATA_DIR / filename
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@router.get("/sigungu")
+def get_sigungu(
+    level: int = Query(2),
+    _: User = Depends(get_current_user),
+):
+    # level=1 → 시도만, level=2 → 시도+시군구 모두
+    features = _load_geojson("korea_map_level1.geojson")["features"]
+    if level >= 2:
+        features = features + _load_geojson("korea_map_level2.geojson")["features"]
+    return {"type": "FeatureCollection", "features": features}

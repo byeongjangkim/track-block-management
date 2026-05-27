@@ -67,7 +67,7 @@ function RouteListView({
   return (
     <div className="h-full flex flex-col p-6 gap-4 overflow-hidden">
       <div className="flex items-center gap-3 shrink-0">
-        <h1 className="text-lg font-semibold text-gray-800">노선도 관리</h1>
+        <h1 className="text-lg font-semibold text-gray-800">노선원장</h1>
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}

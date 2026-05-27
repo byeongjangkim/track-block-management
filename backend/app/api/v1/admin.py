@@ -305,7 +305,7 @@ def download_geometry_template(
     route = _get_route(route_code, db)
     stations = (
         db.query(Facility)
-        .filter(Facility.route_id == route.id, Facility.type == "STATION")
+        .filter(Facility.route_id == route.id, Facility.type == "역")
         .order_by(Facility.km)
         .all()
     )

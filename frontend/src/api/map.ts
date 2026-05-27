@@ -47,6 +47,37 @@ export async function fetchOrgBoundaries(orgId: number): Promise<OrgBoundaryColl
   return res.data;
 }
 
+export interface RailRegionBoundaryFeature {
+  type: 'Feature';
+  properties: {
+    id: number;
+    organization_id: number;
+    organization_name: string;
+    rail_route_id: number;
+    route_code: string;
+    route_name: string;
+    boundary_type: string;
+    start_kp: number;
+    end_kp: number;
+    source_type: string | null;
+    source_id: number | null;
+  };
+  geometry: { type: 'LineString'; coordinates: [number, number][] };
+}
+
+export interface RailRegionBoundaryCollection {
+  type: 'FeatureCollection';
+  features: RailRegionBoundaryFeature[];
+}
+
+export async function fetchRailRouteRegionBoundaries(params?: {
+  rail_route_id?: number;
+  organization_id?: number;
+}): Promise<RailRegionBoundaryCollection> {
+  const res = await api.get<RailRegionBoundaryCollection>('/map/rail-route-region-boundaries', { params });
+  return res.data;
+}
+
 export interface OrgViewport {
   organization_id: number;
   organization_name: string;
@@ -64,7 +95,8 @@ export async function fetchOrgViewport(orgId: number): Promise<OrgViewport> {
 
 export interface FacilityFeatureProps {
   id: number;
-  type: 'STATION' | 'GENERAL_STATION' | 'TUNNEL' | 'BRIDGE' | 'OVERPASS' | 'CROSSING' | 'SUBSTATION' | 'JUNCTION';
+  type: '역' | '변전소' | '구조물' | '소속경계';
+  station_type: string | null;  // 역: 관리역/보통역/무인역/신호장/신호소 | 변전소: ss/sp/ssp/atp/pp | 구조물: 터널/교량/과선교/건널목/분기
   name: string;
   km: number;
   km_end: number | null;
@@ -97,13 +129,16 @@ export async function fetchRouteFacilities(routeCode: string): Promise<FacilityC
 
 export interface BlockSegmentProps {
   id: number;
-  route_id: number;
-  route_code: string;
-  route_name: string;
+  route_id: number | null;
+  rail_route_id: number | null;
+  route_code: string | null;
+  route_name: string | null;
   direction: 'UP' | 'DOWN';
   section_type: 'normal' | 'power_cut';
   start_km: number | null;
   end_km: number | null;
+  start_kp: number | null;
+  end_kp: number | null;
   section_note: string | null;
   display_km: string;
   work_date: string;
@@ -129,7 +164,34 @@ export interface BlockSegmentCollection {
 export async function fetchBlockSegments(params?: {
   work_date?: string;
   route_id?: number;
+  rail_route_id?: number;
 }): Promise<BlockSegmentCollection> {
   const res = await api.get<BlockSegmentCollection>('/map/block-orders/segments', { params });
+  return res.data;
+}
+
+// ── 시군구 배경 지도 ──────────────────────────────────────────────────────────
+
+export interface SigungFeature {
+  type: 'Feature';
+  properties: {
+    sig_cd: string;
+    name: string;
+    full_name: string;
+    admin_level: number;   // 1=시도, 2=시군구
+    centroid: [number, number];
+  };
+  geometry:
+    | { type: 'Polygon'; coordinates: [number, number][][] }
+    | { type: 'MultiPolygon'; coordinates: [number, number][][][] };
+}
+
+export interface SigungCollection {
+  type: 'FeatureCollection';
+  features: SigungFeature[];
+}
+
+export async function fetchSigungu(level: 1 | 2 = 2): Promise<SigungCollection> {
+  const res = await api.get<SigungCollection>('/map/sigungu', { params: { level } });
   return res.data;
 }

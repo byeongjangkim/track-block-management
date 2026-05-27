@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.facility import Facility
 from app.models.route import Route
 
-VALID_TYPES      = {"STATION", "TUNNEL", "BRIDGE", "OVERPASS", "CROSSING", "SUBSTATION", "JUNCTION"}
+VALID_TYPES      = {"역", "변전소", "구조물", "소속경계"}
 VALID_DIRECTIONS = {"UP", "DOWN", "BOTH"}
 
 # 헤더 정규화: 한글 헤더 → 내부 키
@@ -39,11 +39,10 @@ CSV_TEMPLATE_COMMENTS = """\
 # 선로차단작업 관리 - 시설물 CSV 입력 템플릿
 # ───────────────────────────────────────────────────────────────────────
 # 컬럼 설명:
-#   종류      : STATION(역) | TUNNEL(터널) | BRIDGE(교량) | CROSSING(건널목)
-#               OVERPASS(과선교) | SUBSTATION(변전소) | JUNCTION(분기)
+#   종류      : 역 | 변전소 | 구조물 | 소속경계  (대분류)
 #   이름      : 시설물 공식 명칭 (필수)
 #   시작km    : KORAIL 공식 거리정 - 소수점 1자리 (필수)
-#   종료km    : 터널·교량·과선교의 종점 거리정 (해당 없으면 빈칸)
+#   종료km    : 구조물(터널·교량·과선교)의 종점 거리정 (해당 없으면 빈칸)
 #   시작위도  : 시점 WGS84 위도 (입력 시 노선도 표시에 직접 사용)
 #   시작경도  : 시점 WGS84 경도 (미입력 시 route_geometry km 보간으로 계산)
 #   방향      : UP(상선) | DOWN(하선) | BOTH(상하선공용) | 빈칸(방향무관)

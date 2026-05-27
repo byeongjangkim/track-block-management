@@ -1,245 +1,573 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  fetchAdminFacilities,
-  createFacility,
-  updateFacility,
-  deleteFacility,
-  uploadCsv,
-  deployRoute,
-  downloadCsvTemplate,
-} from '../api/admin';
-import type { FacilityResponse } from '../api/adminTypes';
-import { fetchRoutes } from '../api/routes';
+  bulkUploadFacilities,
+  createRailFacility,
+  deleteRailFacility,
+  downloadFacilityTemplate,
+  fetchFacilityClassifications,
+  fetchRailFacilities,
+  fetchReferenceRoutes,
+  updateRailFacility,
+  type BulkUploadResult,
+  type RailFacility,
+  type RailFacilityClassification,
+  type RailFacilityInput,
+} from '../api/railReference';
 
-const FACILITY_TYPES = ['STATION', 'GENERAL_STATION', 'CROSSING', 'OVERPASS', 'SUBSTATION', 'TUNNEL', 'BRIDGE', 'JUNCTION', 'BOUNDARY'];
-const TYPE_LABELS: Record<string, string> = {
-  STATION: '관리역', GENERAL_STATION: '일반역', CROSSING: '건널목', OVERPASS: '과선교',
-  SUBSTATION: '변전소', TUNNEL: '터널', BRIDGE: '교량', JUNCTION: '분기', BOUNDARY: '경계',
+type EditId = number | 'new' | null;
+type StatusFilter = 'all' | 'active' | 'inactive';
+
+interface EditRow {
+  facility_code: string;
+  name: string;
+  classification_id: number | '';
+  kp_start: string;
+  kp_end: string;
+  lat: string;
+  lon: string;
+  lat_end: string;
+  lon_end: string;
+  direction: string;
+  section_from: string;
+  section_to: string;
+  address: string;
+  road_width_m: string;
+  is_paved: boolean | null;
+  bus_accessible: boolean | null;
+  entrance_passage_type: string;
+  entrance_lock_type: string;
+  use_as_baseline_anchor: boolean;
+  is_active: boolean;
+  note: string;
+}
+
+const DIRECTION_LABELS: Record<string, string> = {
+  '': '—',
+  UP: '상선',
+  DOWN: '하선',
+  BOTH: '상하선',
 };
-const DIRECTIONS = ['', 'UP', 'DOWN', 'BOTH'];
-const DIRECTION_LABELS: Record<string, string> = { '': '—', UP: '상선', DOWN: '하선', BOTH: '상하선' };
-const BOUNDARIES = ['', '본부', '시설', '전기', '건축'];
-const BOUNDARY_COLORS: Record<string, string> = {
-  '본부': 'bg-red-100 text-red-700',
-  '시설': 'bg-blue-100 text-blue-700',
-  '전기': 'bg-yellow-100 text-yellow-700',
-  '건축': 'bg-purple-100 text-purple-700',
+
+const MAJOR_COLORS: Record<string, string> = {
+  구조물: 'bg-slate-100 text-slate-700',
+  전기설비: 'bg-purple-100 text-purple-700',
 };
+
+function classificationLabel(c: RailFacilityClassification) {
+  const parts = [c.sub_category];
+  if (c.detail_category) parts.push(c.detail_category);
+  if (c.tertiary_category) parts.push(c.tertiary_category);
+  return `${c.major_category} / ${parts.join(' / ')}`;
+}
+
+function classificationSubLabel(c: RailFacilityClassification) {
+  const parts = [c.sub_category];
+  if (c.detail_category) parts.push(c.detail_category);
+  if (c.tertiary_category) parts.push(c.tertiary_category);
+  return parts.join(' / ');
+}
+
+function emptyRow(classifications: RailFacilityClassification[]): EditRow {
+  return {
+    facility_code: '',
+    name: '',
+    classification_id: classifications.find((c) => c.is_active)?.id ?? '',
+    kp_start: '',
+    kp_end: '',
+    lat: '',
+    lon: '',
+    lat_end: '',
+    lon_end: '',
+    direction: '',
+    section_from: '',
+    section_to: '',
+    address: '',
+    road_width_m: '',
+    is_paved: null,
+    bus_accessible: null,
+    entrance_passage_type: '',
+    entrance_lock_type: '',
+    use_as_baseline_anchor: false,
+    is_active: true,
+    note: '',
+  };
+}
+
+function rowFromFacility(facility: RailFacility): EditRow {
+  return {
+    facility_code: facility.facility_code ?? '',
+    name: facility.name,
+    classification_id: facility.classification_id,
+    kp_start: String(facility.kp_start),
+    kp_end: facility.kp_end == null ? '' : String(facility.kp_end),
+    lat: facility.lat == null ? '' : String(facility.lat),
+    lon: facility.lon == null ? '' : String(facility.lon),
+    lat_end: facility.lat_end == null ? '' : String(facility.lat_end),
+    lon_end: facility.lon_end == null ? '' : String(facility.lon_end),
+    direction: facility.direction ?? '',
+    section_from: facility.section_from ?? '',
+    section_to: facility.section_to ?? '',
+    address: facility.address ?? '',
+    road_width_m: facility.road_width_m == null ? '' : String(facility.road_width_m),
+    is_paved: facility.is_paved,
+    bus_accessible: facility.bus_accessible,
+    entrance_passage_type: facility.entrance_passage_type ?? '',
+    entrance_lock_type: facility.entrance_lock_type ?? '',
+    use_as_baseline_anchor: facility.use_as_baseline_anchor,
+    is_active: facility.is_active,
+    note: facility.note ?? '',
+  };
+}
+
+function toNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatKp(value: number | null) {
+  return value == null ? '—' : value.toFixed(3);
+}
+
+function formatGps(lat: number | null, lon: number | null) {
+  if (lat == null || lon == null) return '—';
+  return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+}
+
+function kpRange(facility: RailFacility) {
+  if (facility.geometry_type === 'linear') {
+    return `${formatKp(facility.kp_start)} ~ ${formatKp(facility.kp_end)}`;
+  }
+  return formatKp(facility.kp_start);
+}
+
+function errorMessage(error: unknown) {
+  const apiError = error as { response?: { data?: { detail?: string } } };
+  return apiError.response?.data?.detail ?? '처리 중 오류가 발생했습니다.';
+}
+
+function buildPayload(row: EditRow, classification: RailFacilityClassification | undefined): RailFacilityInput | null {
+  const kpStart = toNumber(row.kp_start);
+  const kpEnd = toNumber(row.kp_end);
+  const lat = toNumber(row.lat);
+  const lon = toNumber(row.lon);
+  const latEnd = toNumber(row.lat_end);
+  const lonEnd = toNumber(row.lon_end);
+
+  if (!row.name.trim() || row.classification_id === '' || kpStart == null) {
+    return null;
+  }
+  if (classification?.geometry_type === 'linear' && kpEnd == null) {
+    return null;
+  }
+
+  return {
+    facility_code: row.facility_code.trim() || null,
+    name: row.name.trim(),
+    classification_id: row.classification_id,
+    kp_start: kpStart,
+    kp_end: kpEnd,
+    lat,
+    lon,
+    lat_end: latEnd,
+    lon_end: lonEnd,
+    direction: row.direction || null,
+    section_from: row.section_from.trim() || null,
+    section_to: row.section_to.trim() || null,
+    address: row.address.trim() || null,
+    road_width_m: toNumber(row.road_width_m),
+    is_paved: row.is_paved,
+    bus_accessible: row.bus_accessible,
+    entrance_passage_type: row.entrance_passage_type.trim() || null,
+    entrance_lock_type: row.entrance_lock_type.trim() || null,
+    use_as_baseline_anchor: row.use_as_baseline_anchor,
+    is_active: row.is_active,
+    note: row.note.trim() || null,
+  };
+}
 
 export default function FacilitiesAdminPage() {
   const qc = useQueryClient();
+
+  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(null);
+  const [majorFilter, setMajorFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [editingId, setEditingId] = useState<EditId>(null);
+  const [editRow, setEditRow] = useState<EditRow>(emptyRow([]));
+  const [notice, setNotice] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
+  const [uploadResult, setUploadResult] = useState<BulkUploadResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: routes = [] } = useQuery({ queryKey: ['routes'], queryFn: fetchRoutes });
-  const [routeCode, setRouteCode] = useState('');
-  const selectedRoute = routes.find(r => r.code === routeCode) ?? routes[0] ?? null;
-  const activeCode = routeCode || selectedRoute?.code || '';
-
-  const { data: facilities = [], isLoading } = useQuery({
-    queryKey: ['admin-facilities', activeCode],
-    queryFn: () => fetchAdminFacilities(activeCode),
-    enabled: !!activeCode,
+  const { data: routes = [], isLoading: routesLoading } = useQuery({
+    queryKey: ['reference-routes'],
+    queryFn: fetchReferenceRoutes,
   });
 
-  // 편집 상태
-  const [editingId, setEditingId] = useState<number | 'new' | null>(null);
-  const [editRow, setEditRow] = useState<Omit<FacilityResponse, 'id' | 'route_id'>>(EMPTY_ROW);
+  const { data: classifications = [] } = useQuery({
+    queryKey: ['facility-classifications'],
+    queryFn: fetchFacilityClassifications,
+  });
 
-  // 알림
-  const [notice, setNotice] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
+  useEffect(() => {
+    if (selectedRouteId == null && routes.length > 0) {
+      setSelectedRouteId(routes[0].id);
+    }
+  }, [routes, selectedRouteId]);
+
+  const { data: facilities = [], isLoading: facilitiesLoading } = useQuery({
+    queryKey: ['rail-facilities', selectedRouteId],
+    queryFn: () => fetchRailFacilities(selectedRouteId as number),
+    enabled: selectedRouteId != null,
+  });
+
+  const classificationMap = useMemo(
+    () => new Map(classifications.map((classification) => [classification.id, classification])),
+    [classifications],
+  );
+
+  const majorCategories = useMemo(
+    () => Array.from(new Set(classifications.map((classification) => classification.major_category))),
+    [classifications],
+  );
+
+  const selectedRoute = routes.find((route) => route.id === selectedRouteId) ?? null;
+  const filteredFacilities = facilities.filter((facility) => {
+    const matchesMajor = majorFilter === 'all' || facility.major_category === majorFilter;
+    const matchesStatus =
+      statusFilter === 'all'
+      || (statusFilter === 'active' && facility.is_active)
+      || (statusFilter === 'inactive' && !facility.is_active);
+    return matchesMajor && matchesStatus;
+  });
+
+  const activeCount = facilities.filter((facility) => facility.is_active).length;
+  const gpsCount = facilities.filter((facility) => facility.lat != null && facility.lon != null).length;
+  const interpolatedCount = facilities.filter((facility) => facility.lat == null || facility.lon == null).length;
+  const anchorCount = facilities.filter((facility) => facility.use_as_baseline_anchor).length;
+
   function showNotice(type: 'ok' | 'err', msg: string) {
     setNotice({ type, msg });
-    setTimeout(() => setNotice(null), 4000);
+    setTimeout(() => setNotice(null), 3500);
   }
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['admin-facilities', activeCode] });
+  function invalidate() {
+    qc.invalidateQueries({ queryKey: ['rail-facilities', selectedRouteId] });
+    qc.invalidateQueries({ queryKey: ['reference-summary'] });
+    qc.invalidateQueries({ queryKey: ['reference-routes'] });
+  }
 
-  const createMut  = useMutation({ mutationFn: (b: typeof EMPTY_ROW) => createFacility(activeCode, b), onSuccess: () => { invalidate(); setEditingId(null); } });
-  const updateMut  = useMutation({ mutationFn: ({ id, b }: { id: number; b: Partial<typeof EMPTY_ROW> }) => updateFacility(id, b), onSuccess: () => { invalidate(); setEditingId(null); } });
-  const deleteMut  = useMutation({ mutationFn: deleteFacility, onSuccess: invalidate });
-  const deployMut  = useMutation({
-    mutationFn: () => deployRoute(activeCode),
-    onSuccess: (r) => showNotice('ok', `배포 완료 — 앵커 ${r.anchor_count}개, 시설물 ${r.facility_count}개`),
-    onError:   () => showNotice('err', '배포 중 오류 발생'),
-  });
-  const uploadMut  = useMutation({
-    mutationFn: (file: File) => uploadCsv(activeCode, file),
-    onSuccess: (r) => {
+  const createMut = useMutation({
+    mutationFn: (payload: RailFacilityInput) => createRailFacility(selectedRouteId as number, payload),
+    onSuccess: () => {
       invalidate();
-      const warn = r.errors.length ? `\n오류 ${r.errors.length}건` : '';
-      showNotice('ok', `CSV 적용 완료 — ${r.facility_count}개 시설물, 앵커 ${r.anchor_count}개${warn}`);
+      setEditingId(null);
+      setEditRow(emptyRow(classifications));
+      showNotice('ok', '시설물이 등록되었습니다.');
     },
-    onError: () => showNotice('err', 'CSV 업로드 실패'),
+    onError: (error) => showNotice('err', errorMessage(error)),
   });
 
-  function startEdit(f: FacilityResponse) {
-    setEditingId(f.id);
-    setEditRow({ type: f.type, name: f.name, km: f.km, km_end: f.km_end, lat: f.lat, lon: f.lon, lat_end: f.lat_end, lon_end: f.lon_end, direction: f.direction, boundary: f.boundary, has_station_map: f.has_station_map, use_as_anchor: f.use_as_anchor, note: f.note });
-  }
+  const updateMut = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: RailFacilityInput }) => updateRailFacility(id, payload),
+    onSuccess: () => {
+      invalidate();
+      setEditingId(null);
+      showNotice('ok', '시설물이 수정되었습니다.');
+    },
+    onError: (error) => showNotice('err', errorMessage(error)),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: deleteRailFacility,
+    onSuccess: () => {
+      invalidate();
+      showNotice('ok', '시설물이 삭제되었습니다.');
+    },
+    onError: (error) => showNotice('err', errorMessage(error)),
+  });
 
   function startNew() {
     setEditingId('new');
-    setEditRow({ ...EMPTY_ROW });
+    setEditRow(emptyRow(classifications));
+  }
+
+  function startEdit(facility: RailFacility) {
+    setEditingId(facility.id);
+    setEditRow(rowFromFacility(facility));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditRow(emptyRow(classifications));
   }
 
   function saveEdit() {
-    if (!editRow.name.trim()) { showNotice('err', '이름을 입력하세요'); return; }
-    if (editingId === 'new') createMut.mutate(editRow);
-    else if (typeof editingId === 'number') updateMut.mutate({ id: editingId, b: editRow });
+    const classification = editRow.classification_id === ''
+      ? undefined
+      : classificationMap.get(editRow.classification_id);
+    const payload = buildPayload(editRow, classification);
+    if (!payload) {
+      showNotice('err', classification?.geometry_type === 'linear'
+        ? '시설물명, 분류, 시작 KP, 종료 KP를 확인하세요.'
+        : '시설물명, 분류, 시작 KP를 확인하세요.');
+      return;
+    }
+    if (editingId === 'new') {
+      createMut.mutate(payload);
+    } else if (typeof editingId === 'number') {
+      updateMut.mutate({ id: editingId, payload });
+    }
   }
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  function handleDelete(facility: RailFacility) {
+    if (!confirm(`삭제하시겠습니까?\n${facility.name}`)) return;
+    deleteMut.mutate(facility.id);
+  }
+
+  function setField<K extends keyof EditRow>(key: K, value: EditRow[K]) {
+    setEditRow((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleDownloadTemplate() {
+    if (!selectedRouteId) return;
+    try {
+      const blob = await downloadFacilityTemplate(selectedRouteId);
+      const route = routes.find((r) => r.id === selectedRouteId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `facilities_${route?.korail_route_code ?? selectedRouteId}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      showNotice('err', '양식 다운로드에 실패했습니다.');
+    }
+  }
+
+  const uploadMut = useMutation({
+    mutationFn: (file: File) => bulkUploadFacilities(selectedRouteId as number, file),
+    onSuccess: (result) => {
+      invalidate();
+      setUploadResult(result);
+      if (result.errors.length === 0) {
+        showNotice('ok', `${result.success}건 등록 완료`);
+      } else {
+        showNotice('ok', `${result.success}건 등록, ${result.errors.length}건 오류`);
+      }
+    },
+    onError: (error) => showNotice('err', errorMessage(error)),
+  });
+
+  function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
     if (!file) return;
+    setUploadResult(null);
     uploadMut.mutate(file);
-    e.target.value = '';
-  }
-
-  function setField<K extends keyof typeof EMPTY_ROW>(k: K, v: (typeof EMPTY_ROW)[K]) {
-    setEditRow(r => ({ ...r, [k]: v }));
+    event.target.value = '';
   }
 
   return (
     <div className="h-full flex flex-col p-6 gap-4 overflow-hidden">
-
-      {/* 상단 툴바 */}
       <div className="flex items-center gap-3 shrink-0 flex-wrap">
-        <div>
-          <label className="text-xs text-gray-500 mr-1">노선</label>
-          <select
-            value={activeCode}
-            onChange={e => setRouteCode(e.target.value)}
-            className="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+        <h1 className="text-lg font-semibold text-gray-800">시설물 관리</h1>
+        <select
+          value={selectedRouteId ?? ''}
+          onChange={(event) => {
+            setSelectedRouteId(Number(event.target.value));
+            cancelEdit();
+          }}
+          className="border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 min-w-52"
+        >
+          {routes.map((route) => (
+            <option key={route.id} value={route.id}>
+              {route.name} · {route.korail_route_code}
+            </option>
+          ))}
+        </select>
+        <select
+          value={majorFilter}
+          onChange={(event) => setMajorFilter(event.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+        >
+          <option value="all">전체 분류</option>
+          {majorCategories.map((category) => (
+            <option key={category} value={category}>{category}</option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+          className="border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+        >
+          <option value="all">전체 상태</option>
+          <option value="active">사용</option>
+          <option value="inactive">미사용</option>
+        </select>
+        <span className="text-sm text-gray-400">
+          {routesLoading ? '노선 조회 중...' : `표시 ${filteredFacilities.length.toLocaleString()}개 / 전체 ${facilities.length.toLocaleString()}개`}
+        </span>
+        <div className="ml-auto flex gap-2">
+          <button
+            onClick={handleDownloadTemplate}
+            disabled={!selectedRoute}
+            className="px-3 py-2 text-sm border border-gray-400 text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50"
           >
-            {routes.map(r => <option key={r.code} value={r.code}>{r.name}</option>)}
-          </select>
-        </div>
-
-        <div className="flex gap-2 ml-auto flex-wrap">
-          {/* CSV 업로드 */}
+            양식 다운로드
+          </button>
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploadMut.isPending}
-            className="px-3 py-2 text-sm border rounded-lg hover:bg-gray-50 text-gray-600 disabled:opacity-50"
+            disabled={!selectedRoute || uploadMut.isPending}
+            className="px-3 py-2 text-sm border border-green-600 text-green-600 rounded-lg hover:bg-green-50 disabled:opacity-50"
           >
-            {uploadMut.isPending ? '업로드 중...' : 'CSV 업로드'}
+            {uploadMut.isPending ? 'CSV 업로드 중...' : 'CSV 업로드'}
           </button>
-          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} />
-
-          {/* CSV 템플릿 다운로드 */}
-          <button
-            onClick={() => downloadCsvTemplate(activeCode).catch(() => showNotice('err', '템플릿 다운로드 실패'))}
-            className="px-3 py-2 text-sm border rounded-lg hover:bg-gray-50 text-gray-600"
-          >
-            템플릿 다운로드
-          </button>
-
-          {/* 행 추가 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={handleFileChange}
+          />
           <button
             onClick={startNew}
-            className="px-3 py-2 text-sm border rounded-lg hover:bg-gray-50 text-gray-600"
+            disabled={!selectedRoute || classifications.length === 0 || editingId === 'new'}
+            className="px-3 py-2 text-sm border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:opacity-50"
           >
-            + 행 추가
-          </button>
-
-          {/* 배포 */}
-          <button
-            onClick={() => deployMut.mutate()}
-            disabled={deployMut.isPending || facilities.length === 0}
-            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
-          >
-            {deployMut.isPending ? '배포 중...' : '노선도 배포'}
+            + 시설물 추가
           </button>
         </div>
       </div>
 
-      {/* 알림 */}
+      <div className="flex gap-2 flex-wrap shrink-0">
+        <span className="px-2.5 py-1 rounded-full text-xs bg-slate-50 text-slate-700 border border-slate-200">
+          {selectedRoute ? selectedRoute.name : '노선 미선택'}
+        </span>
+        <span className="px-2.5 py-1 rounded-full text-xs bg-green-50 text-green-700 border border-green-100">
+          사용 {activeCount.toLocaleString()}개
+        </span>
+        <span className="px-2.5 py-1 rounded-full text-xs bg-blue-50 text-blue-700 border border-blue-100">
+          GPS {gpsCount.toLocaleString()}개
+        </span>
+        <span className="px-2.5 py-1 rounded-full text-xs bg-amber-50 text-amber-700 border border-amber-100">
+          KP 보간 {interpolatedCount.toLocaleString()}개
+        </span>
+        <span className="px-2.5 py-1 rounded-full text-xs bg-purple-50 text-purple-700 border border-purple-100">
+          기준선 앵커 {anchorCount.toLocaleString()}개
+        </span>
+      </div>
+
       {notice && (
-        <div className={`px-4 py-2 rounded-lg text-sm shrink-0 ${notice.type === 'ok' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
+        <div className={`px-4 py-2 rounded-lg text-sm shrink-0 ${
+          notice.type === 'ok'
+            ? 'bg-green-50 text-green-700 border border-green-200'
+            : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
           {notice.msg}
         </div>
       )}
+      {uploadResult && uploadResult.errors.length > 0 && (
+        <div className="px-4 py-3 rounded-lg text-xs bg-amber-50 border border-amber-200 shrink-0 max-h-36 overflow-y-auto">
+          <div className="font-medium text-amber-700 mb-1">업로드 오류 ({uploadResult.errors.length}건)</div>
+          {uploadResult.errors.map((err, i) => (
+            <div key={i} className="text-amber-600">{err}</div>
+          ))}
+        </div>
+      )}
 
-      {/* 안내 */}
-      <p className="text-xs text-gray-400 shrink-0">
-        CSV 업로드 또는 직접 입력 후 <strong>노선도 배포</strong> 버튼을 눌러야 지도에 반영됩니다.
-        총 {facilities.length}개 시설물
-      </p>
-
-      {/* 테이블 */}
       <div className="flex-1 overflow-auto border rounded-lg">
         <table className="w-full text-sm border-collapse">
           <thead className="bg-gray-50 sticky top-0">
             <tr>
-              {['종류', '이름', '시작km', '종료km', '시작위도', '시작경도', '종료위도', '종료경도', '방향', '경계구분', '역배선도', '앵커', '비고', ''].map(h => (
-                <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 border-b whitespace-nowrap">{h}</th>
+              {['상태', '대분류', '세부분류', '시설물명', 'KP', 'GPS', '종료 GPS', '방향', '기준선', '소속', '비고', '작업'].map((header) => (
+                <th key={header} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 border-b whitespace-nowrap">
+                  {header}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {/* 신규 추가 행 */}
             {editingId === 'new' && (
               <EditRow
                 row={editRow}
+                classifications={classifications}
                 onChange={setField}
+                onCancel={cancelEdit}
                 onSave={saveEdit}
-                onCancel={() => setEditingId(null)}
                 isPending={createMut.isPending}
               />
             )}
-
-            {isLoading ? (
-              <tr><td colSpan={14} className="text-center py-10 text-gray-400">불러오는 중...</td></tr>
-            ) : facilities.length === 0 ? (
-              <tr><td colSpan={14} className="text-center py-10 text-gray-400">시설물이 없습니다. CSV를 업로드하거나 행을 추가하세요.</td></tr>
-            ) : (
-              facilities.map(f => (
-                editingId === f.id ? (
-                  <EditRow
-                    key={f.id}
-                    row={editRow}
-                    onChange={setField}
-                    onSave={saveEdit}
-                    onCancel={() => setEditingId(null)}
-                    isPending={updateMut.isPending}
-                  />
-                ) : (
-                  <tr key={f.id} className="border-b hover:bg-gray-50">
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <TypeBadge type={f.type} />
-                    </td>
-                    <td className="px-3 py-2 font-medium">{f.name}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{f.km.toFixed(1)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-400">{f.km_end != null ? f.km_end.toFixed(1) : '—'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-400">{f.lat ?? '—'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-400">{f.lon ?? '—'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-400">{f.lat_end ?? '—'}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-400">{f.lon_end ?? '—'}</td>
-                    <td className="px-3 py-2 text-center text-xs text-gray-500">{f.direction ? DIRECTION_LABELS[f.direction] ?? f.direction : '—'}</td>
-                    <td className="px-3 py-2 text-center">
-                      {f.boundary ? (
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${BOUNDARY_COLORS[f.boundary] ?? 'bg-gray-100 text-gray-600'}`}>
-                          {f.boundary}
-                        </span>
-                      ) : ''}
-                    </td>
-                    <td className="px-3 py-2 text-center">{f.has_station_map ? '✓' : ''}</td>
-                    <td className="px-3 py-2 text-center">{f.use_as_anchor ? '✓' : ''}</td>
-                    <td className="px-3 py-2 text-xs text-gray-400 max-w-[120px] truncate">{f.note ?? ''}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      <div className="flex gap-2">
-                        <button onClick={() => startEdit(f)} className="text-xs text-blue-600 hover:underline">수정</button>
-                        <button
-                          onClick={() => { if (confirm(`삭제: ${f.name}`)) deleteMut.mutate(f.id); }}
-                          className="text-xs text-red-500 hover:underline"
-                        >삭제</button>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              ))
+            {facilitiesLoading && (
+              <tr>
+                <td colSpan={12} className="px-4 py-10 text-center text-gray-400">
+                  조회 중...
+                </td>
+              </tr>
             )}
+            {!facilitiesLoading && filteredFacilities.length === 0 && editingId !== 'new' && (
+              <tr>
+                <td colSpan={12} className="px-4 py-10 text-center text-gray-400">
+                  등록된 시설물이 없습니다.
+                </td>
+              </tr>
+            )}
+            {!facilitiesLoading && filteredFacilities.map((facility) => (
+              editingId === facility.id ? (
+                <EditRow
+                  key={facility.id}
+                  row={editRow}
+                  classifications={classifications}
+                  onChange={setField}
+                  onCancel={cancelEdit}
+                  onSave={saveEdit}
+                  isPending={updateMut.isPending}
+                />
+              ) : (
+                <tr key={facility.id} className="border-b hover:bg-blue-50 transition-colors">
+                  <td className="px-3 py-2.5">
+                    {facility.is_active ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">사용</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500">미사용</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <span className={`px-2 py-0.5 rounded-full text-xs ${MAJOR_COLORS[facility.major_category] ?? 'bg-gray-100 text-gray-600'}`}>
+                      {facility.major_category}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">
+                    {[facility.sub_category, facility.detail_category, facility.tertiary_category].filter(Boolean).join(' / ')}
+                  </td>
+                  <td className="px-3 py-2.5 font-medium text-gray-800 whitespace-nowrap">
+                    {facility.name}
+                    {facility.facility_code && <span className="ml-1 text-xs text-gray-400">{facility.facility_code}</span>}
+                  </td>
+                  <td className="px-3 py-2.5 tabular-nums text-gray-600 whitespace-nowrap">{kpRange(facility)}</td>
+                  <td className="px-3 py-2.5 tabular-nums text-gray-500 whitespace-nowrap">{formatGps(facility.lat, facility.lon)}</td>
+                  <td className="px-3 py-2.5 tabular-nums text-gray-500 whitespace-nowrap">{formatGps(facility.lat_end, facility.lon_end)}</td>
+                  <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{DIRECTION_LABELS[facility.direction ?? ''] ?? facility.direction}</td>
+                  <td className="px-3 py-2.5">
+                    {facility.use_as_baseline_anchor ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 text-purple-700">앵커</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">보간</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
+                    {facility.management_office_name ?? facility.management_region_name ?? '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-gray-400 max-w-44 truncate">{facility.note ?? ''}</td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <div className="flex gap-2">
+                      <button onClick={() => startEdit(facility)} className="text-xs text-blue-600 hover:underline">수정</button>
+                      <button onClick={() => handleDelete(facility)} className="text-xs text-red-600 hover:underline">삭제</button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            ))}
           </tbody>
         </table>
       </div>
@@ -247,99 +575,221 @@ export default function FacilitiesAdminPage() {
   );
 }
 
-// ── 편집 행 컴포넌트 ─────────────────────────────────────────────────────
-
 function EditRow({
-  row, onChange, onSave, onCancel, isPending,
+  row,
+  classifications,
+  onChange,
+  onCancel,
+  onSave,
+  isPending,
 }: {
-  row: Omit<FacilityResponse, 'id' | 'route_id'>;
-  onChange: <K extends keyof typeof EMPTY_ROW>(k: K, v: (typeof EMPTY_ROW)[K]) => void;
-  onSave: () => void;
+  row: EditRow;
+  classifications: RailFacilityClassification[];
+  onChange: <K extends keyof EditRow>(key: K, value: EditRow[K]) => void;
   onCancel: () => void;
+  onSave: () => void;
   isPending: boolean;
 }) {
-  const inp = 'w-full border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400';
+  const inputCls = 'h-8 border rounded px-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400 w-full bg-white';
+  const selectedClassification = row.classification_id === ''
+    ? undefined
+    : classifications.find((classification) => classification.id === row.classification_id);
+  const isLinear = selectedClassification?.geometry_type === 'linear';
+  const isGate = selectedClassification?.sub_category === '선로출입문';
+
   return (
     <tr className="border-b bg-blue-50">
-      <td className="px-2 py-1">
-        <select value={row.type} onChange={e => onChange('type', e.target.value)} className={inp}>
-          {FACILITY_TYPES.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-        </select>
-      </td>
-      <td className="px-2 py-1">
-        <input value={row.name} onChange={e => onChange('name', e.target.value)} placeholder="이름" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.1" value={row.km} onChange={e => onChange('km', Number(e.target.value))} className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.1" value={row.km_end ?? ''} onChange={e => onChange('km_end', e.target.value ? Number(e.target.value) : null)} placeholder="—" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.0001" value={row.lat ?? ''} onChange={e => onChange('lat', e.target.value ? Number(e.target.value) : null)} placeholder="위도" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.0001" value={row.lon ?? ''} onChange={e => onChange('lon', e.target.value ? Number(e.target.value) : null)} placeholder="시작경도" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.0001" value={row.lat_end ?? ''} onChange={e => onChange('lat_end', e.target.value ? Number(e.target.value) : null)} placeholder="종료위도" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <input type="number" step="0.0001" value={row.lon_end ?? ''} onChange={e => onChange('lon_end', e.target.value ? Number(e.target.value) : null)} placeholder="종료경도" className={inp} />
-      </td>
-      <td className="px-2 py-1">
-        <select value={row.direction ?? ''} onChange={e => onChange('direction', e.target.value || null)} className={inp}>
-          {DIRECTIONS.map(d => <option key={d} value={d}>{DIRECTION_LABELS[d]}</option>)}
-        </select>
-      </td>
-      <td className="px-2 py-1">
-        <select value={row.boundary ?? ''} onChange={e => onChange('boundary', e.target.value || null)} className={inp}>
-          {BOUNDARIES.map(b => <option key={b} value={b}>{b || '—'}</option>)}
-        </select>
-      </td>
-      <td className="px-2 py-1 text-center">
-        <input type="checkbox" checked={row.has_station_map} onChange={e => onChange('has_station_map', e.target.checked)} />
-      </td>
-      <td className="px-2 py-1 text-center">
-        <input type="checkbox" checked={row.use_as_anchor} onChange={e => onChange('use_as_anchor', e.target.checked)} />
-      </td>
-      <td className="px-2 py-1">
-        <input value={row.note ?? ''} onChange={e => onChange('note', e.target.value || null)} placeholder="비고" className={inp} />
-      </td>
-      <td className="px-2 py-1 whitespace-nowrap">
-        <button onClick={onSave} disabled={isPending} className="text-xs text-white bg-blue-600 px-2 py-1 rounded hover:bg-blue-700 disabled:opacity-50 mr-1">
-          {isPending ? '...' : '저장'}
-        </button>
-        <button onClick={onCancel} className="text-xs text-gray-500 hover:underline">취소</button>
+      <td colSpan={12} className="p-3">
+        <div className="grid grid-cols-2 lg:grid-cols-6 xl:grid-cols-12 gap-2 items-end">
+          <label className="text-xs text-gray-500 xl:col-span-2">
+            분류
+            <select
+              value={row.classification_id}
+              onChange={(event) => {
+                const newId = Number(event.target.value);
+                onChange('classification_id', newId);
+                const cls = classifications.find((c) => c.id === newId);
+                if (cls?.sub_category === '선로출입문') {
+                  onChange('direction', cls.detail_category === '상선' ? 'UP' : 'DOWN');
+                }
+              }}
+              className={`${inputCls} mt-1`}
+            >
+              {Object.entries(
+                classifications
+                  .filter((c) => c.is_active)
+                  .reduce<Record<string, RailFacilityClassification[]>>((acc, c) => {
+                    if (!acc[c.major_category]) acc[c.major_category] = [];
+                    acc[c.major_category].push(c);
+                    return acc;
+                  }, {}),
+              ).map(([major, items]) => (
+                <optgroup key={major} label={major}>
+                  {items.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {classificationSubLabel(c)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-gray-500 xl:col-span-2">
+            시설물명
+            <input
+              value={row.name}
+              onChange={(event) => onChange('name', event.target.value)}
+              className={`${inputCls} mt-1`}
+            />
+          </label>
+          <label className="text-xs text-gray-500">
+            시설코드
+            <input
+              value={row.facility_code}
+              onChange={(event) => onChange('facility_code', event.target.value)}
+              className={`${inputCls} mt-1`}
+            />
+          </label>
+          <label className="text-xs text-gray-500">
+            시작 KP
+            <input
+              value={row.kp_start}
+              onChange={(event) => onChange('kp_start', event.target.value)}
+              type="number"
+              step="0.001"
+              className={`${inputCls} mt-1`}
+            />
+          </label>
+          <label className="text-xs text-gray-500">
+            종료 KP
+            <input
+              value={row.kp_end}
+              onChange={(event) => onChange('kp_end', event.target.value)}
+              type="number"
+              step="0.001"
+              placeholder={isLinear ? '' : '—'}
+              className={`${inputCls} mt-1`}
+            />
+          </label>
+          <label className="text-xs text-gray-500">
+            위도
+            <input value={row.lat} onChange={(event) => onChange('lat', event.target.value)} type="number" step="0.000001" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500">
+            경도
+            <input value={row.lon} onChange={(event) => onChange('lon', event.target.value)} type="number" step="0.000001" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500">
+            종료 위도
+            <input value={row.lat_end} onChange={(event) => onChange('lat_end', event.target.value)} type="number" step="0.000001" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500">
+            종료 경도
+            <input value={row.lon_end} onChange={(event) => onChange('lon_end', event.target.value)} type="number" step="0.000001" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500">
+            방향
+            <select
+              value={row.direction}
+              onChange={(event) => onChange('direction', event.target.value)}
+              disabled={isGate}
+              className={`${inputCls} mt-1 ${isGate ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+            >
+              {Object.entries(DIRECTION_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-gray-500">
+            구간 시작역
+            <input value={row.section_from} onChange={(e) => onChange('section_from', e.target.value)} placeholder="예: 오송역" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500">
+            구간 종료역
+            <input value={row.section_to} onChange={(e) => onChange('section_to', e.target.value)} placeholder="예: 천안아산역" className={`${inputCls} mt-1`} />
+          </label>
+          <label className="text-xs text-gray-500 xl:col-span-2">
+            주소
+            <input value={row.address} onChange={(e) => onChange('address', e.target.value)} className={`${inputCls} mt-1`} />
+          </label>
+
+          {isGate && (
+            <>
+              <label className="text-xs text-gray-500">
+                도로폭 (m)
+                <input value={row.road_width_m} onChange={(e) => onChange('road_width_m', e.target.value)} type="number" step="0.1" min="0" className={`${inputCls} mt-1`} />
+              </label>
+              <label className="text-xs text-gray-500">
+                통로 형태
+                <input value={row.entrance_passage_type} onChange={(e) => onChange('entrance_passage_type', e.target.value)} placeholder="예: 직선통로" className={`${inputCls} mt-1`} />
+              </label>
+              <label className="text-xs text-gray-500">
+                잠금방식
+                <select value={row.entrance_lock_type} onChange={(e) => onChange('entrance_lock_type', e.target.value)} className={`${inputCls} mt-1`}>
+                  <option value="">—</option>
+                  <option value="번호키">번호키</option>
+                  <option value="일반열쇠">일반열쇠</option>
+                  <option value="전자키">전자키</option>
+                  <option value="기타">기타</option>
+                </select>
+              </label>
+              <label className="h-8 flex items-center gap-2 text-xs text-gray-600 mt-4">
+                <input
+                  type="checkbox"
+                  checked={row.is_paved === true}
+                  onChange={(e) => onChange('is_paved', e.target.checked ? true : null)}
+                />
+                포장
+              </label>
+              <label className="h-8 flex items-center gap-2 text-xs text-gray-600 mt-4">
+                <input
+                  type="checkbox"
+                  checked={row.bus_accessible === true}
+                  onChange={(e) => onChange('bus_accessible', e.target.checked ? true : null)}
+                />
+                버스 진입
+              </label>
+            </>
+          )}
+
+          <label className="text-xs text-gray-500 xl:col-span-2">
+            비고
+            <input value={row.note} onChange={(event) => onChange('note', event.target.value)} className={`${inputCls} mt-1`} />
+          </label>
+          <label className="h-8 flex items-center gap-2 text-xs text-gray-600">
+            <input
+              type="checkbox"
+              checked={row.use_as_baseline_anchor}
+              onChange={(event) => onChange('use_as_baseline_anchor', event.target.checked)}
+            />
+            기준선 앵커
+          </label>
+          <label className="h-8 flex items-center gap-2 text-xs text-gray-600">
+            <input
+              type="checkbox"
+              checked={row.is_active}
+              onChange={(event) => onChange('is_active', event.target.checked)}
+            />
+            사용
+          </label>
+          <div className="flex gap-2 justify-end xl:col-span-2">
+            <button
+              onClick={onSave}
+              disabled={isPending}
+              className="h-8 px-3 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            >
+              저장
+            </button>
+            <button
+              onClick={onCancel}
+              disabled={isPending}
+              className="h-8 px-3 text-xs border rounded hover:bg-white disabled:opacity-50"
+            >
+              취소
+            </button>
+          </div>
+        </div>
       </td>
     </tr>
   );
 }
-
-// ── 타입 배지 ─────────────────────────────────────────────────────────────
-
-const TYPE_COLORS: Record<string, string> = {
-  STATION: 'bg-blue-100 text-blue-700',
-  GENERAL_STATION: 'bg-sky-100 text-sky-700',
-  CROSSING: 'bg-yellow-100 text-yellow-700',
-  OVERPASS: 'bg-purple-100 text-purple-700',
-  SUBSTATION: 'bg-orange-100 text-orange-700',
-  TUNNEL: 'bg-gray-200 text-gray-700',
-  BRIDGE: 'bg-cyan-100 text-cyan-700',
-  JUNCTION: 'bg-green-100 text-green-700',
-  BOUNDARY: 'bg-red-100 text-red-700',
-};
-
-function TypeBadge({ type }: { type: string }) {
-  return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TYPE_COLORS[type] ?? 'bg-gray-100 text-gray-600'}`}>
-      {TYPE_LABELS[type] ?? type}
-    </span>
-  );
-}
-
-const EMPTY_ROW: Omit<FacilityResponse, 'id' | 'route_id'> = {
-  type: 'STATION', name: '', km: 0, km_end: null,
-  lat: null, lon: null, lat_end: null, lon_end: null,
-  direction: null, boundary: null, has_station_map: false, use_as_anchor: true, note: null,
-};

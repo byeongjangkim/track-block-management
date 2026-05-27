@@ -1,7 +1,8 @@
 export interface FacilityResponse {
   id: number;
   route_id: number;
-  type: string;
+  type: string;           // 대분류: 역 | 변전소 | 구조물 | 소속경계
+  station_type: string | null;  // 소분류: 관리역/보통역/무인역/신호장/신호소 | ss/sp/ssp/atp/pp | 터널/교량/과선교/건널목/분기 | 지역본부/사업소
   name: string;
   km: number;
   km_end: number | null;

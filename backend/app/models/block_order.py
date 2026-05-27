@@ -17,10 +17,15 @@ class BlockOrder(Base):
     )
 
     # 노선·위치
-    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id"), nullable=False)
+    route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
+    rail_route_id: Mapped[int | None] = mapped_column(ForeignKey("rail_routes.id"), nullable=True)
     direction: Mapped[str] = mapped_column(String(4), nullable=False)     # "UP" / "DOWN"
+    # 철도 km과 KP는 같은 의미로 사용한다. start_km/end_km은 legacy 호환 컬럼이고,
+    # 신규 렌더링/보간은 start_kp/end_kp를 기준으로 한다.
     start_km: Mapped[float | None] = mapped_column(Float, nullable=True)  # 전차선 단전 등 km 없는 경우 NULL
     end_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    start_kp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_kp: Mapped[float | None] = mapped_column(Float, nullable=True)
     section_note: Mapped[str | None] = mapped_column(String(200))         # 단전구간명 등 (예: "청도SP~밀양SS")
 
     # 전차선 단전 변전소 FK (지도 표시용 — facilities.km 에서 좌표 계산)
@@ -70,4 +75,5 @@ class BlockOrder(Base):
 
     organization: Mapped["Organization"] = relationship(back_populates="block_orders")
     route: Mapped["Route"] = relationship(back_populates="block_orders")
+    rail_route: Mapped["RailRoute"] = relationship("RailRoute")
     created_by_user: Mapped["User"] = relationship(back_populates="block_orders")

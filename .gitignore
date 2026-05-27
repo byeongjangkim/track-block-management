@@ -34,6 +34,11 @@ maps/processed/
 maps/**/__pycache__/
 maps/**/*.pyc
 
+# 대용량 원본 GIS 데이터 (GitHub 100MB 제한)
+maps/data/korea_sigungu.geojson
+maps/data/korea_sigungu_points.csv
+maps/data/korea_sido_full.geojson
+
 # ============================================================
 # scripts/
 # ============================================================

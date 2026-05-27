@@ -34,9 +34,12 @@ export interface BlockOrder {
   id: number;
   organization_id: number | null;
   route_id: number;
+  rail_route_id: number | null;
   direction: Direction;
   start_km: number | null;
   end_km: number | null;
+  start_kp: number | null;
+  end_kp: number | null;
   section_note: string | null;
   start_facility_id: number | null;
   end_facility_id: number | null;
@@ -69,10 +72,13 @@ export interface BlockOrder {
 
 export interface BlockOrderCreate {
   route_id: number;
+  rail_route_id?: number | null;
   organization_id?: number;
   direction: Direction;
   start_km: number | null;
   end_km: number | null;
+  start_kp?: number | null;
+  end_kp?: number | null;
   section_note?: string;
   start_facility_id?: number | null;
   end_facility_id?: number | null;
@@ -202,10 +208,13 @@ export interface BulkParseResult {
 // /block-orders/bulk 요청 한 행
 export interface BulkBlockOrderItem {
   route_id: number;
+  rail_route_id?: number | null;
   organization_id?: number;
   direction: 'UP' | 'DOWN';
   start_km?: number | null;
   end_km?: number | null;
+  start_kp?: number | null;
+  end_kp?: number | null;
   section_note?: string | null;  // 전차선 단전 구간명
   work_date: string;
   start_time: string;   // HH:MM

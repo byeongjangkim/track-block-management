@@ -272,6 +272,7 @@ pikepdf                # 손상·선형화 PDF 복구 후 pdfplumber에 전달
 | GET | `/api/v1/map/organizations/{id}/boundaries` | 로그인 | 조직 관할 구간 GeoJSON 오버레이 |
 | GET | `/api/v1/map/organizations/{id}/viewport` | 로그인 | 조직 초기 viewport (center_lat/lon, zoom) |
 | GET | `/api/v1/map/block-orders/segments` | 로그인 | 날짜별 차단명령 구간 GeoJSON (user geometry 있는 것만) |
+| GET | `/api/v1/map/sigungu?lod=low\|mid\|high` | 로그인 | 시군구 경계 GeoJSON (배경 지도용, LOD 3단계) |
 
 > **중요:** `map/routes/{code}/facilities` 및 `map/block-orders/segments` 는 `source='user'` geometry에서만 km 보간한다. `source='shp'`(km=NULL) 기반 보간은 없다.
 
