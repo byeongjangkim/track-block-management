@@ -89,7 +89,16 @@ def _assert_can_register(
     end_kp: float | None,
     field: str,
     db: Session,
+    rail_route_id: int | None = None,
 ) -> None:
+    # 기지 노선(line_type='기지')은 legacy route 매핑이 없으므로 별도 처리:
+    # org_admin 이상이면 자기 조직의 기지 작업으로 허용한다.
+    if route_id is None and rail_route_id is not None:
+        depot = db.query(RailRoute).filter(
+            RailRoute.id == rail_route_id, RailRoute.line_type == "기지"
+        ).first()
+        if depot:
+            return  # 기지 작업은 KP 관할구간 검증 생략, org_admin 권한만으로 허용
     if route_id is None and current_user.role != "system_superuser":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -115,6 +124,7 @@ def list_block_orders(
     date_to: date | None = None,
     organization_id: int | None = None,
     field: str | None = None,
+    is_external: bool | None = None,
     start_km_from: float | None = None,
     end_km_to: float | None = None,
     start_kp_from: float | None = None,
@@ -136,6 +146,8 @@ def list_block_orders(
         q = q.filter(BlockOrder.organization_id == organization_id)
     if field is not None:
         q = q.filter(BlockOrder.field == field)
+    if is_external is not None:
+        q = q.filter(BlockOrder.is_external == is_external)
     if start_km_from is not None:
         q = q.filter(BlockOrder.start_kp >= start_km_from)
     if end_km_to is not None:
@@ -162,6 +174,7 @@ def create_block_order(
         end_kp=data.get("end_kp"),
         field=data["field"],
         db=db,
+        rail_route_id=data.get("rail_route_id"),
     )
 
     # organization_id: system_superuser는 body에서, org_admin은 자기 조직
@@ -235,6 +248,7 @@ def update_block_order(
             end_kp=new_end,
             field=new_field,
             db=db,
+            rail_route_id=data.get("rail_route_id"),
         )
 
     for key, value in data.items():
@@ -275,6 +289,7 @@ class BulkBlockOrderItem(BaseModel):
     train_watcher: str | None = None
     train_watcher_phone: str | None = None
     reason: str | None = None
+    track_name: str | None = None
     note: str | None = None
 
 
@@ -312,6 +327,7 @@ def bulk_create_block_orders(
                 end_kp=data.get("end_kp"),
                 field=data["field"],
                 db=db,
+                rail_route_id=data.get("rail_route_id"),
             )
 
             org_id = (

@@ -510,13 +510,20 @@ def list_facility_classifications(
 
 @router.get("/routes")
 def list_reference_routes(
+    line_type: str | None = Query(None, description="고속선 | 일반선"),
     db: Session = Depends(get_db),
     _: User = Depends(require_org_admin),
 ):
+    where_clause = ""
+    params: dict = {}
+    if line_type in ("고속선", "일반선"):
+        where_clause = "WHERE rr.line_type = :line_type"
+        params["line_type"] = line_type
+
     rows = (
         db.execute(
             text(
-                """
+                f"""
                 WITH station_counts AS (
                     SELECT
                         rail_route_id,
@@ -533,11 +540,20 @@ def list_reference_routes(
                         MAX(kp) AS baseline_kp_max
                     FROM rail_baseline_points
                     GROUP BY rail_route_id
+                ),
+                computed_counts AS (
+                    SELECT
+                        rail_route_id,
+                        COUNT(*) FILTER (WHERE lod = 'high') AS computed_high_count,
+                        MAX(computed_at) AS last_computed_at
+                    FROM rail_computed_geometry
+                    GROUP BY rail_route_id
                 )
                 SELECT
                     rr.id,
                     rr.korail_route_code,
                     rr.name,
+                    rr.line_type,
                     rr.route_category,
                     rr.start_station_name,
                     rr.end_station_name,
@@ -556,13 +572,18 @@ def list_reference_routes(
                     COALESCE(bc.baseline_point_count, 0) AS baseline_point_count,
                     COALESCE(bc.render_anchor_count, 0) AS render_anchor_count,
                     bc.baseline_kp_min,
-                    bc.baseline_kp_max
+                    bc.baseline_kp_max,
+                    COALESCE(cc.computed_high_count, 0) AS computed_high_count,
+                    cc.last_computed_at
                 FROM rail_routes rr
                 LEFT JOIN station_counts sc ON sc.rail_route_id = rr.id
                 LEFT JOIN baseline_counts bc ON bc.rail_route_id = rr.id
-                ORDER BY rr.name, rr.korail_route_code
+                LEFT JOIN computed_counts cc ON cc.rail_route_id = rr.id
+                {where_clause}
+                ORDER BY rr.line_type DESC, rr.name, rr.korail_route_code
                 """
-            )
+            ),
+            params,
         )
         .mappings()
         .all()

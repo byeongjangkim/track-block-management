@@ -69,6 +69,9 @@ class BlockOrder(Base):
     safety_items: Mapped[str | None] = mapped_column(Text)        # 안전관리항목 (줄바꿈 구분)
     document_path: Mapped[str | None] = mapped_column(String(255))  # PDF 상대경로
 
+    # 기지 내 선로/구역 (기지 노선 작업 시 사용, 본선 작업 시 NULL)
+    track_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # 메타
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)

@@ -1,30 +1,37 @@
 import { useEffect, useRef, useMemo, useState } from 'react';
-import { useQuery, useQueries } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import * as d3 from 'd3';
 import {
-  fetchAllGeometry,
+  fetchAllRailRouteGeometry,
+  fetchAllRailStations,
   fetchOrgBoundaries,
   fetchOrgViewport,
-  fetchRouteFacilities,
   fetchSigungu,
-  type RouteFeatureCollection,
+  type RailRouteFeature,
+  type RailRouteFeatureCollection,
   type OrgBoundaryCollection,
   type OrgViewport,
   type FacilityFeature,
+  type FacilityCollection,
   type BlockSegmentCollection,
   type BlockSegmentFeature,
   type SigungCollection,
   type SigungFeature,
 } from '../../api/map';
-import { fetchRoutes } from '../../api/routes';
+import type { FacilityFilter } from '../../types';
 
 interface Props {
   orgId: number | null;
   showOrgBoundary: boolean;
-  hiddenRoutes: Set<string>;
-  /** 시설물 표시 ON/OFF — true이면 hiddenRoutes에 없는 전 노선 시설물 표시 (lat/lon 기반) */
-  showFacilities?: boolean;
-  /** 차단명령 구간 오버레이 데이터 (차단현황도에서 전달) */
+  /** routes-computed 레이어 line_type 필터 — Set에 포함된 line_type은 숨김 */
+  hiddenLineTypes?: Set<'고속선' | '일반선'>;
+  /** 시설물 분류 필터 — null이면 시설물 미표시 */
+  facilityFilter?: FacilityFilter | null;
+  /** 특정 노선 코드로 시설물 필터링 (null=전체) */
+  filterRouteCode?: string | null;
+  /** 위험지구(2m)/보호지구(30m) 시각화 ON/OFF */
+  showDangerZone?: boolean;
+  /** 차단명령 구간 오버레이 데이터 */
   blockSegments?: BlockSegmentCollection | null;
   /** 선택된 차단명령 ID (강조 표시) */
   selectedBlockId?: number | null;
@@ -32,10 +39,8 @@ interface Props {
 
 // ── 색상 정의 ──────────────────────────────────────────────────────────────
 
-function routeStroke(code: string, source: string): string {
-  const isHigh = code.endsWith('_high');
-  if (source === 'user') return isHigh ? '#dc2626' : '#374151';
-  return isHigh ? '#fca5a5' : '#9ca3af';
+function computedRouteStroke(lineType: '고속선' | '일반선'): string {
+  return lineType === '고속선' ? '#dc2626' : '#374151';
 }
 
 const FIELD_COLORS: Record<string, string> = {
@@ -45,7 +50,6 @@ const FIELD_COLORS: Record<string, string> = {
   건축: '#dc2626',
 };
 
-// 시설물 색상 — 대분류(type) + 소분류(station_type) 기반
 function facilityColor(type: string, stationType: string | null): string {
   if (type === '역') {
     switch (stationType) {
@@ -57,7 +61,14 @@ function facilityColor(type: string, stationType: string | null): string {
       default:       return '#3b82f6';
     }
   }
-  if (type === '변전소') return '#7c3aed';
+  if (type === '변전소') {
+    switch (stationType) {
+      case '전기실':     return '#0284c7';
+      case '통신실':     return '#16a34a';
+      case '신호기계실': return '#b45309';
+      default:           return '#7c3aed';
+    }
+  }
   if (type === '구조물') {
     switch (stationType) {
       case '터널':   return '#6b7280';
@@ -71,32 +82,29 @@ function facilityColor(type: string, stationType: string | null): string {
   return '#9ca3af';
 }
 
-// 범례용 색상 (고정)
 const LEGEND_COLORS = {
-  관리역: '#1d4ed8',
-  보통역: '#3b82f6',
-  신호장: '#818cf8',
-  터널:   '#6b7280',
-  교량:   '#0891b2',
-  건널목: '#f59e0b',
-  변전소: '#7c3aed',
-  분기:   '#059669',
+  관리역:     '#1d4ed8',
+  보통역:     '#3b82f6',
+  무인역:     '#60a5fa',
+  신호장:     '#818cf8',
+  신호소:     '#a78bfa',
+  터널:       '#6b7280',
+  교량:       '#0891b2',
+  건널목:     '#f59e0b',
+  변전소:     '#7c3aed',
+  분기:       '#059669',
+  전기실:     '#0284c7',
+  통신실:     '#16a34a',
+  신호기계실: '#b45309',
 };
 
-// 차단방향별 색상
 const BLOCK_DIR_COLORS: Record<string, string> = {
-  UP:   '#ef4444',  // 빨간색 (상선 — 좌측)
-  DOWN: '#f97316',  // 주황색 (하선 — 우측)
+  UP:   '#ef4444',
+  DOWN: '#f97316',
 };
 
-// 차단구간 오프셋 (SVG 좌표 단위, 줌과 함께 스케일)
-// UP(상선) = 좌측 (+방향), DOWN(하선) = 우측 (-방향)
 const BLOCK_OFFSET_SVG = 4;
 
-/**
- * GeoJSON 좌표 배열을 투영 후 방향별 수직 오프셋을 적용한 SVG path d 문자열 반환.
- * UP: 선로 진행 방향(km 증가)의 좌측, DOWN: 우측.
- */
 function buildOffsetPath(
   coords: [number, number][],
   direction: 'UP' | 'DOWN',
@@ -108,7 +116,6 @@ function buildOffsetPath(
 
   if (pts.length < 2) return '';
 
-  // UP=좌측 → normal 방향 부호 +1, DOWN=우측 → -1
   const sign = direction === 'UP' ? 1 : -1;
 
   const offsetPts: [number, number][] = pts.map((p, i) => {
@@ -125,7 +132,6 @@ function buildOffsetPath(
     }
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len < 1e-6) return p;
-    // 스크린 좌표계(y-down)에서 좌측 법선 벡터: (-dy, dx)
     const nx = -dy / len;
     const ny =  dx / len;
     return [p[0] + sign * BLOCK_OFFSET_SVG * nx, p[1] + sign * BLOCK_OFFSET_SVG * ny];
@@ -134,38 +140,34 @@ function buildOffsetPath(
   return d3.line()(offsetPts) ?? '';
 }
 
-// 시설물 팝업 상태
 interface FacilityPopup {
-  x: number;        // SVG 컨테이너 기준 픽셀 좌표
+  x: number;
   y: number;
   name: string;
   type: string;
-  info: string;     // "노선A  km X\n노선B  km Y" 형태
+  info: string;
 }
 
-// ── 시도별 연한 채움색 (인접 시도 간 자연스러운 구분) ────────────────────────
-// 4색 정리(four-color theorem) 기반 배정, 불투명도 0.15
 const SIDO_FILLS: Record<string, string> = {
-  '11': 'rgba(248,113,113,0.15)',  // 서울 — 연장밋빛
-  '26': 'rgba(96,165,250,0.15)',   // 부산 — 연파랑
-  '27': 'rgba(167,139,250,0.15)', // 대구 — 연보라
-  '28': 'rgba(52,211,153,0.15)',  // 인천 — 연에메랄드
-  '29': 'rgba(251,191,36,0.15)',  // 광주 — 연노랑
-  '30': 'rgba(251,191,36,0.15)',  // 대전 — 연노랑
-  '31': 'rgba(167,139,250,0.15)', // 울산 — 연보라
-  '36': 'rgba(248,113,113,0.15)', // 세종 — 연장밋빛
-  '41': 'rgba(251,191,36,0.15)',  // 경기 — 연노랑
-  '43': 'rgba(96,165,250,0.15)',  // 충북 — 연파랑
-  '44': 'rgba(52,211,153,0.15)',  // 충남 — 연에메랄드
-  '46': 'rgba(96,165,250,0.15)',  // 전남 — 연파랑
-  '47': 'rgba(52,211,153,0.15)',  // 경북 — 연에메랄드
-  '48': 'rgba(248,113,113,0.15)', // 경남 — 연장밋빛
-  '50': 'rgba(96,165,250,0.15)',  // 제주 — 연파랑
-  '51': 'rgba(248,113,113,0.15)', // 강원 — 연장밋빛
-  '52': 'rgba(167,139,250,0.15)', // 전북 — 연보라
+  '11': 'rgba(248,113,113,0.15)',
+  '26': 'rgba(96,165,250,0.15)',
+  '27': 'rgba(167,139,250,0.15)',
+  '28': 'rgba(52,211,153,0.15)',
+  '29': 'rgba(251,191,36,0.15)',
+  '30': 'rgba(251,191,36,0.15)',
+  '31': 'rgba(167,139,250,0.15)',
+  '36': 'rgba(248,113,113,0.15)',
+  '41': 'rgba(251,191,36,0.15)',
+  '43': 'rgba(96,165,250,0.15)',
+  '44': 'rgba(52,211,153,0.15)',
+  '46': 'rgba(96,165,250,0.15)',
+  '47': 'rgba(52,211,153,0.15)',
+  '48': 'rgba(248,113,113,0.15)',
+  '50': 'rgba(96,165,250,0.15)',
+  '51': 'rgba(248,113,113,0.15)',
+  '52': 'rgba(167,139,250,0.15)',
 };
 
-// ── 시군구 배경 공통 렌더 함수 ──────────────────────────────────────────────
 function _renderSigungu(
   bgLayer:    d3.Selection<SVGGElement, unknown, null, undefined>,
   labelLayer: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -205,21 +207,22 @@ function _renderSigungu(
     .text((d) => d.properties.name);
 }
 
-// 줌 스케일 기준 (초기 줌 ~0.95)
-const ZOOM_STATION       = 0.8;  // 관리역: 초기 화면부터 표시
-const ZOOM_STATION2      = 3;    // 보통역·무인역·신호장·신호소: 중간 확대 후 표시
-const ZOOM_SEGMENT       = 3;    // 구조물(터널·교량·과선교): 약간 확대 후 표시
-const ZOOM_DETAIL        = 8;    // 변전소·건널목·분기: 크게 확대 후 표시
-const ZOOM_SIGUNGU_LABEL  = 2;    // 시군구 레이블 표시 시작 배율
-const ZOOM_SIGUNGU_LEVEL2 = 1.5; // 시군 경계 표시 시작 배율
-const ZOOM_SIGUNGU_LEVEL3 = 4.0; // 구 경계 표시 시작 배율
+const ZOOM_STATION       = 0.8;
+const ZOOM_STATION2      = 3;
+const ZOOM_SEGMENT       = 3;
+const ZOOM_DETAIL        = 8;
+const ZOOM_SIGUNGU_LABEL  = 2;
+const ZOOM_SIGUNGU_LEVEL2 = 1.5;
+const ZOOM_SIGUNGU_LEVEL3 = 4.0;
 
 
 export default function RailwayMap({
   orgId,
   showOrgBoundary,
-  hiddenRoutes,
-  showFacilities = false,
+  hiddenLineTypes = new Set(),
+  facilityFilter = null,
+  filterRouteCode = null,
+  showDangerZone = false,
   blockSegments = null,
   selectedBlockId = null,
 }: Props) {
@@ -228,15 +231,23 @@ export default function RailwayMap({
   const zoomRef           = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const projRef           = useRef<d3.GeoProjection | null>(null);
   const scaleRef          = useRef<number>(1);
-  const zoomDisplayRef    = useRef<HTMLSpanElement>(null);           // 줌 배율 표시 DOM 직접 제어
-  const sigunguDataRef    = useRef<SigungCollection | null>(null);  // 최신 sigungu 데이터 (D3 init에서 참조)
+  const zoomDisplayRef    = useRef<HTMLSpanElement>(null);
+  const sigunguDataRef    = useRef<SigungCollection | null>(null);
+  // stale-closure 방지 refs — zoom handler에서 최신 상태에 접근
+  const facilityFilterRef  = useRef<FacilityFilter | null>(null);
+  const filterRouteCodeRef = useRef<string | null>(null);
   const [facilityPopup, setFacilityPopup] = useState<FacilityPopup | null>(null);
   const setPopupRef = useRef(setFacilityPopup);
 
+  // 매 렌더마다 refs 동기화
+  facilityFilterRef.current  = facilityFilter;
+  filterRouteCodeRef.current = filterRouteCode;
+
   // ── 데이터 조회 ─────────────────────────────────────────────────────────
-  const { data: allGeo } = useQuery<RouteFeatureCollection>({
-    queryKey: ['map-all-geometry'],
-    queryFn: () => fetchAllGeometry(),
+
+  const { data: allRailGeo } = useQuery<RailRouteFeatureCollection>({
+    queryKey: ['map-all-rail-geometry'],
+    queryFn: () => fetchAllRailRouteGeometry('high'),
     staleTime: 0,
   });
 
@@ -254,47 +265,26 @@ export default function RailwayMap({
     staleTime: Infinity,
   });
 
-  // 전 노선 목록 (시설물 조회 대상 결정용)
-  const { data: allRoutes = [] } = useQuery({
-    queryKey: ['routes'],
-    queryFn: fetchRoutes,
-    staleTime: Infinity,
-  });
-
-  // 시군구 배경 지도 (level=2: 시도+시군구)
   const { data: sigunguData } = useQuery<SigungCollection>({
     queryKey: ['map-sigungu', 2],
     queryFn: () => fetchSigungu(2),
     staleTime: Infinity,
   });
-  // 렌더 마다 ref를 최신값으로 갱신 — D3 init(stale closure) 내에서 안전하게 참조
   sigunguDataRef.current = sigunguData ?? null;
 
-  // showFacilities=true 이고 hiddenRoutes에 없는 노선 전체 대상
-  const targetRouteCodes = useMemo(() => {
-    if (!showFacilities) return [] as string[];
-    return allRoutes.map((r) => r.code).filter((code) => !hiddenRoutes.has(code));
-  }, [showFacilities, allRoutes, hiddenRoutes]);
-
-  // 대상 노선마다 병렬 조회
-  const facilityQueries = useQueries({
-    queries: targetRouteCodes.map((code) => ({
-      queryKey: ['map-facilities', code],
-      queryFn: () => fetchRouteFacilities(code),
-      staleTime: 60_000,
-    })),
+  const { data: railStations } = useQuery<FacilityCollection>({
+    queryKey: ['map-all-rail-stations'],
+    queryFn: fetchAllRailStations,
+    enabled: facilityFilter != null,
+    staleTime: Infinity,
   });
 
-  // 모든 노선 시설물을 하나의 배열로 병합 + GPS 중복 마커 병합
-  // 같은 (lon, lat) 좌표의 Point 시설물은 하나의 마커로 합치고
-  // _lines 필드에 [{route_name, km}] 배열로 다중 노선 정보를 보존한다.
+  // GPS 중복 마커 병합
   const mergedFacilityFeatures = useMemo(() => {
-    const all = facilityQueries.flatMap((q) => q.data?.features ?? []);
-
+    const all = [...(railStations?.features ?? [])];
     const points = all.filter((f) => f.geometry.type === 'Point');
     const segs   = all.filter((f) => f.geometry.type !== 'Point');
 
-    // (lon, lat) 소수점 5자리 키로 그룹화 (약 1m 오차 허용)
     type Pt = typeof points[0];
     const groups = new Map<string, Pt[]>();
     for (const f of points) {
@@ -306,24 +296,19 @@ export default function RailwayMap({
 
     const deduped: (Pt & { _lines: { route_name: string; km: number }[] })[] = [];
     for (const group of groups.values()) {
-      // 대표 마커: 관리역 우선, 없으면 역, 없으면 첫 번째
       const rep = group.find((f) => f.properties.type === '역' && f.properties.station_type === '관리역')
         ?? group.find((f) => f.properties.type === '역')
         ?? group[0];
-      const _lines = group.map((f) => ({
-        route_name: f.properties.route_name,
-        km: f.properties.km,
-      }));
+      const _lines = group.map((f) => ({ route_name: f.properties.route_name, km: f.properties.km }));
       deduped.push({ ...rep, _lines });
     }
 
     return [...segs, ...deduped];
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facilityQueries.map((q) => q.dataUpdatedAt).join(',')]);
+  }, [railStations]);
 
   // ── D3 초기화 ───────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!svgRef.current || !allGeo || allGeo.features.length === 0) return;
+    if (!svgRef.current || !allRailGeo || allRailGeo.features.length === 0) return;
 
     const svg = d3.select(svgRef.current);
     const container = svgRef.current.parentElement!;
@@ -333,9 +318,6 @@ export default function RailwayMap({
     svg.attr('width', W).attr('height', H);
 
     if (!projRef.current) {
-      // 목표: 최소 줌(k=0.5)에서 한국이 뷰포트의 90%를 차지
-      // scale × Mercator_height(0.1036 rad) × 0.5 = H × 0.90  → scale = H × 17.4
-      // scale × lon_range(0.1134 rad) × 0.5 = W × 0.90         → scale = W × 15.9
       const scale = Math.min(W * 15.9, H * 17.4);
       projRef.current = d3.geoMercator()
         .center([127.7, 36.3])
@@ -346,18 +328,16 @@ export default function RailwayMap({
     const pathGen = d3.geoPath().projection(projection);
 
     const g = d3.select(gRef.current!);
-
-    // 전체 레이어 구성
     g.selectAll('*').remove();
     g.append('g').attr('class', 'sigungu-background');
     g.append('g').attr('class', 'sigungu-labels');
-    g.append('g').attr('class', 'routes');
+    g.append('g').attr('class', 'routes-computed');
     g.append('g').attr('class', 'org-boundaries');
+    g.append('g').attr('class', 'danger-zones');      // 위험/보호구간 (block-segments 아래)
     g.append('g').attr('class', 'block-segments');
     g.append('g').attr('class', 'facility-segments');
     g.append('g').attr('class', 'facility-points');
 
-    // 시군구 배경 렌더링 (init 시점에 이미 로드된 경우)
     const sgInit = sigunguDataRef.current;
     if (sgInit) {
       _renderSigungu(
@@ -369,25 +349,6 @@ export default function RailwayMap({
       );
     }
 
-    // 노선 경로 렌더링
-    g.select<SVGGElement>('.routes')
-      .selectAll<SVGPathElement, (typeof allGeo.features)[0]>('path.route')
-      .data(
-        allGeo.features,
-        (d) => `${d.properties.route_code}-${d.properties.source}-${d.properties.segment}`,
-      )
-      .join('path')
-      .attr('class', (d) => `route route-${d.properties.route_code}`)
-      .attr('d', (d) => pathGen(d as any) ?? '')
-      .attr('fill', 'none')
-      .attr('stroke', (d) => routeStroke(d.properties.route_code, d.properties.source))
-      .attr('stroke-width', 1.5)
-      .attr('stroke-dasharray', (d) => d.properties.source === 'shp' ? '4 3' : null)
-      .attr('vector-effect', 'non-scaling-stroke')
-      .attr('opacity', (d) => d.properties.source === 'shp' ? 0.5 : 1)
-      .attr('display', (d) => hiddenRoutes.has(d.properties.route_code) ? 'none' : null);
-
-    // 줌 설정
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.5, 30])
       .on('zoom', ({ transform }) => {
@@ -402,28 +363,24 @@ export default function RailwayMap({
 
     zoomRef.current = zoom;
     svg.call(zoom);
-
-    // SVG 배경 클릭 시 팝업 닫힘
     svg.on('click', () => setPopupRef.current(null));
 
-    // k=0.5에서 한국 중심([W/2,H/2])을 화면 중심에 배치
-    // screen = SVG * k + tx → W/2 = W/2 * 0.5 + W/4  ✓
     svg.call(
       zoom.transform,
       d3.zoomIdentity.translate(W / 4, H / 4).scale(0.5),
     );
 
-  }, [allGeo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 줌에 따른 시설물 가시성 + 고정 크기 보정 ───────────────────────────
-  // scale(1/k): 부모 <g>의 줌 배율을 상쇄 → 마커·텍스트가 화면에서 항상 동일 크기
   function _updateFacilityVisibility(k: number) {
     if (!gRef.current || !projRef.current) return;
     const g    = d3.select(gRef.current);
     const proj = projRef.current;
+    const ff   = facilityFilterRef.current;
+    const frc  = filterRouteCodeRef.current;
 
-    // 시군구 경계: admin_level별 단계적 표시
-    // level3 중 광역시/특별시 직할 구(full_name 2단어)는 시군과 동일 기준 적용
+    // 시군구 경계 가시성
     g.selectAll<SVGPathElement, SigungFeature>('path.sigungu')
       .attr('display', (d) => {
         const lvl = d.properties.admin_level;
@@ -434,7 +391,6 @@ export default function RailwayMap({
         return k >= threshold ? null : 'none';
       });
 
-    // 시군구 레이블: admin_level별 단계적 표시 + 글자 크기 역보정
     g.selectAll<SVGTextElement, SigungFeature>('text.sigungu-label')
       .attr('display', (d) => {
         const lvl = d.properties.admin_level;
@@ -446,45 +402,124 @@ export default function RailwayMap({
       })
       .style('font-size', `${9 / k}px`);
 
-    // Point 시설물: 가시성 판단 + 역보정 스케일 적용
+    // Point 시설물: facilityFilter + routeCode 체크 후 줌 가시성 적용
     g.selectAll<SVGGElement, FacilityFeature>('g.facility-point-item').each(function(d) {
-      const { type, station_type } = d.properties;
+      const { type, station_type, route_code } = d.properties;
+
+      // 노선 필터
+      if (frc != null && route_code !== frc) {
+        d3.select(this).attr('display', 'none');
+        return;
+      }
+
+      // 분류 필터 (세분화된 키 사용)
+      let typeOk = false;
+      if (ff != null) {
+        if (type === '역') {
+          if      (station_type === '관리역') typeOk = ff.역관리역;
+          else if (station_type === '보통역') typeOk = ff.역보통역;
+          else if (station_type === '무인역') typeOk = ff.역무인역;
+          else if (station_type === '신호장') typeOk = ff.역신호장;
+          else if (station_type === '신호소') typeOk = ff.역신호소;
+          else                               typeOk = ff.역보통역;  // station_type 미설정 fallback
+        } else if (type === '변전소') {
+          if (!station_type || ['ss','sp','ssp','atp','pp'].includes(station_type))
+            typeOk = ff.전기변전소;
+          else if (station_type === '전기실')     typeOk = ff.전기전기실;
+          else if (station_type === '통신실')     typeOk = ff.전기통신실;
+          else if (station_type === '신호기계실') typeOk = ff.전기신호기계실;
+          else                                    typeOk = ff.전기변전소;
+        } else if (type === '구조물') {
+          if      (station_type === '건널목') typeOk = ff.구조물건널목;
+          else if (station_type === '분기')   typeOk = ff.구조물분기;
+          // 터널·교량·과선교는 LineString — segments에서 처리
+        }
+      }
+
+      if (!typeOk) {
+        d3.select(this).attr('display', 'none');
+        return;
+      }
+
+      // 줌 가시성
       let visible = false;
       if (type === '역') {
-        visible = station_type === '관리역' ? k >= ZOOM_STATION : k >= ZOOM_STATION2;
+        const isSignal = station_type === '신호장' || station_type === '신호소';
+        visible = station_type === '관리역' ? k >= ZOOM_STATION
+                : isSignal                  ? k >= ZOOM_STATION2
+                :                             k >= ZOOM_STATION2;
       } else if (type === '변전소') {
         visible = k >= ZOOM_DETAIL;
       } else if (type === '구조물') {
-        // 건널목·분기는 Point로 렌더, 터널·교량·과선교는 Segment로 렌더
         visible = (station_type === '건널목' || station_type === '분기') && k >= ZOOM_DETAIL;
       }
 
       const el = d3.select(this);
       el.attr('display', visible ? null : 'none');
 
-      // 투영 좌표 기준으로 translate 유지하면서 크기 역보정
       const coords = (d.geometry as { type: 'Point'; coordinates: [number, number] }).coordinates;
       const pt = proj(coords);
       if (pt) el.attr('transform', `translate(${pt[0]},${pt[1]}) scale(${1 / k})`);
     });
 
-    // 구간 시설물 (구조물/터널·교량·과선교) — vector-effect로 선 두께는 이미 고정
+    // 구간 시설물 (터널·교량·과선교) — 세분화된 키 사용
     g.selectAll<SVGPathElement, FacilityFeature>('path.facility-segment').each(function(d) {
-      const { type, station_type } = d.properties;
-      const isLinearStructure = type === '구조물' && (station_type === '터널' || station_type === '교량' || station_type === '과선교');
-      d3.select(this).attr('display', isLinearStructure && k >= ZOOM_SEGMENT ? null : 'none');
+      const { type, station_type, route_code } = d.properties;
+
+      if (frc != null && route_code !== frc) {
+        d3.select(this).attr('display', 'none');
+        return;
+      }
+
+      let typeOk = false;
+      if (ff != null && type === '구조물') {
+        if      (station_type === '터널')   typeOk = ff.구조물터널;
+        else if (station_type === '교량')   typeOk = ff.구조물교량;
+        else if (station_type === '과선교') typeOk = ff.구조물과선교;
+      }
+
+      const isLinear = type === '구조물' &&
+        (station_type === '터널' || station_type === '교량' || station_type === '과선교');
+      d3.select(this).attr('display', isLinear && k >= ZOOM_SEGMENT && typeOk ? null : 'none');
     });
   }
 
-  // ── hiddenRoutes 변경 ────────────────────────────────────────────────────
+  // ── hiddenLineTypes 변경 → routes-computed 레이어 display 갱신 ───────────
   useEffect(() => {
-    if (!gRef.current || !allGeo) return;
+    if (!gRef.current || !allRailGeo) return;
     const g = d3.select(gRef.current);
-    g.selectAll<SVGPathElement, (typeof allGeo.features)[0]>('path.route')
-      .attr('display', (d) => hiddenRoutes.has(d.properties.route_code) ? 'none' : null);
-  }, [hiddenRoutes, allGeo]);
+    g.selectAll<SVGPathElement, RailRouteFeature>('path.route-computed')
+      .attr('display', (d) => hiddenLineTypes.has(d.properties.line_type) ? 'none' : null);
+  }, [hiddenLineTypes, allRailGeo]);
 
-  // ── 시군구 배경 레이어 (sigunguData가 allGeo 이후에 도착한 경우) ──────────
+  // ── facilityFilter / filterRouteCode 변경 → 가시성 재계산 ───────────────
+  useEffect(() => {
+    _updateFacilityVisibility(scaleRef.current);
+  }, [facilityFilter, filterRouteCode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── rail_computed_geometry 노선 렌더링 ───────────────────────────────────
+  useEffect(() => {
+    if (!gRef.current || !projRef.current || !allRailGeo || allRailGeo.features.length === 0) return;
+    const g       = d3.select(gRef.current);
+    const layer   = g.select<SVGGElement>('.routes-computed');
+    if (layer.empty()) return;
+
+    const pathGen = d3.geoPath().projection(projRef.current);
+
+    layer
+      .selectAll<SVGPathElement, RailRouteFeature>('path.route-computed')
+      .data(allRailGeo.features, (d) => String(d.properties.rail_route_id))
+      .join('path')
+      .attr('class', (d) => `route-computed route-computed-${d.properties.korail_route_code}`)
+      .attr('d', (d) => pathGen(d as any) ?? '')
+      .attr('fill', 'none')
+      .attr('stroke', (d) => computedRouteStroke(d.properties.line_type))
+      .attr('stroke-width', 1.5)
+      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('display', (d) => hiddenLineTypes.has(d.properties.line_type) ? 'none' : null);
+  }, [allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 시군구 배경 레이어 ─────────────────────────────────────────────────
   useEffect(() => {
     if (!gRef.current || !projRef.current || !sigunguData) return;
     const g = d3.select(gRef.current);
@@ -502,7 +537,7 @@ export default function RailwayMap({
 
   // ── 조직 viewport 적용 ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!allGeo || allGeo.features.length === 0) return;
+    if (!allRailGeo || allRailGeo.features.length === 0) return;
     if (!orgViewport || !projRef.current || !zoomRef.current || !svgRef.current) return;
 
     const svg = d3.select(svgRef.current);
@@ -518,7 +553,7 @@ export default function RailwayMap({
       zoomRef.current.transform,
       d3.zoomIdentity.translate(W / 2 - k * center[0], H / 2 - k * center[1]).scale(k),
     );
-  }, [allGeo, orgViewport]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allRailGeo, orgViewport]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 조직 관할 경계 업데이트 ─────────────────────────────────────────────
   useEffect(() => {
@@ -548,9 +583,51 @@ export default function RailwayMap({
       });
   }, [showOrgBoundary, orgBoundary]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── 위험지구/보호지구 레이어 (block-segments 아래) ──────────────────────
+  useEffect(() => {
+    if (!gRef.current || !projRef.current) return;
+    const proj = projRef.current;
+    const g = d3.select(gRef.current);
+    const layer = g.select<SVGGElement>('.danger-zones');
+    layer.selectAll('*').remove();
+    if (!showDangerZone || !blockSegments || blockSegments.features.length === 0) return;
+
+    // 보호지구 (30m 대표: 너비 20px, 투명도 0.12)
+    layer
+      .selectAll<SVGPathElement, BlockSegmentFeature>('path.protect-zone')
+      .data(blockSegments.features)
+      .join('path')
+      .attr('class', 'protect-zone')
+      .attr('d', (d) =>
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj)
+      )
+      .attr('fill', 'none')
+      .attr('stroke', (d) => BLOCK_DIR_COLORS[d.properties.direction] ?? '#ef4444')
+      .attr('stroke-width', 20)
+      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('opacity', 0.12)
+      .attr('stroke-linecap', 'round')
+      .style('pointer-events', 'none');
+
+    // 위험지구 (2m 대표: 너비 8px, 투명도 0.28)
+    layer
+      .selectAll<SVGPathElement, BlockSegmentFeature>('path.danger-zone')
+      .data(blockSegments.features)
+      .join('path')
+      .attr('class', 'danger-zone')
+      .attr('d', (d) =>
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj)
+      )
+      .attr('fill', 'none')
+      .attr('stroke', (d) => BLOCK_DIR_COLORS[d.properties.direction] ?? '#ef4444')
+      .attr('stroke-width', 8)
+      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('opacity', 0.28)
+      .attr('stroke-linecap', 'round')
+      .style('pointer-events', 'none');
+  }, [showDangerZone, blockSegments]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── 차단명령 구간 레이어 ─────────────────────────────────────────────────
-  // UP(상선) = 선로 좌측 오프셋, DOWN(하선) = 우측 오프셋
-  // 전차선 단전(section_type='power_cut') = 점선 스타일
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
     const proj = projRef.current;
@@ -606,10 +683,8 @@ export default function RailwayMap({
 
     const pathGen = d3.geoPath().projection(projRef.current);
 
-    // ① 구간 시설물 (LineString: 구조물/터널·교량·과선교)
-    const segFeatures = mergedFacilityFeatures.filter(
-      (f) => f.geometry.type === 'LineString',
-    );
+    // ① 구간 시설물 (LineString)
+    const segFeatures = mergedFacilityFeatures.filter((f) => f.geometry.type === 'LineString');
     segLayer
       .selectAll<SVGPathElement, FacilityFeature>('path.facility-segment')
       .data(segFeatures)
@@ -622,14 +697,12 @@ export default function RailwayMap({
       .attr('vector-effect', 'non-scaling-stroke')
       .attr('opacity', 0.8)
       .attr('stroke-linecap', 'round')
-      .attr('display', 'none')  // 초기 숨김 — 줌에서 제어
+      .attr('display', 'none')
       .append('title')
       .text((d) => `[${d.properties.station_type ?? d.properties.type}] ${d.properties.name}\n${d.properties.km}~${d.properties.km_end}km`);
 
     // ② Point 시설물
-    const pointFeatures = mergedFacilityFeatures.filter(
-      (f) => f.geometry.type === 'Point',
-    );
+    const pointFeatures = mergedFacilityFeatures.filter((f) => f.geometry.type === 'Point');
 
     type MergedFeature = FacilityFeature & { _lines: { route_name: string; km: number }[] };
 
@@ -638,7 +711,7 @@ export default function RailwayMap({
       .data(pointFeatures as MergedFeature[])
       .join('g')
       .attr('class', 'facility-point-item')
-      .attr('display', 'none')  // 초기 숨김 — 가시성·transform은 _updateFacilityVisibility 일괄 처리
+      .attr('display', 'none')
       .style('cursor', 'pointer')
       .on('click', function(event: MouseEvent, d: MergedFeature) {
         event.stopPropagation();
@@ -647,75 +720,54 @@ export default function RailwayMap({
         const rect = svgEl.getBoundingClientRect();
         const px = event.clientX - rect.left;
         const py = event.clientY - rect.top;
-
         const label = d.properties.station_type ?? d.properties.type;
-        const info = d._lines
-          .map((l) => `${l.route_name}  ${l.km}km`)
-          .join('\n');
-        setPopupRef.current({
-          x: px, y: py,
-          name: d.properties.name,
-          type: label,
-          info,
-        });
+        const info = d._lines.map((l) => `${l.route_name}  ${l.km}km`).join('\n');
+        setPopupRef.current({ x: px, y: py, name: d.properties.name, type: label, info });
       });
 
     // 관리역: 큰 원 + 역명
     pointGroups.filter((d) => d.properties.type === '역' && d.properties.station_type === '관리역')
       .call((sel) => {
-        sel.append('circle')
-          .attr('r', 4)
-          .attr('fill', LEGEND_COLORS.관리역)
-          .attr('stroke', 'white')
-          .attr('stroke-width', 1.5)
-          .attr('vector-effect', 'non-scaling-stroke');
-        sel.append('text')
-          .attr('x', 6)
-          .attr('y', 3)
-          .attr('font-size', '11px')
-          .attr('fill', LEGEND_COLORS.관리역)
-          .attr('font-weight', '600')
-          .style('pointer-events', 'none')
-          .text((d) => d.properties.name);
+        sel.append('circle').attr('r', 4).attr('fill', LEGEND_COLORS.관리역)
+          .attr('stroke', 'white').attr('stroke-width', 1.5).attr('vector-effect', 'non-scaling-stroke');
+        sel.append('text').attr('x', 6).attr('y', 3).attr('font-size', '11px')
+          .attr('fill', LEGEND_COLORS.관리역).attr('font-weight', '600')
+          .style('pointer-events', 'none').text((d) => d.properties.name);
         sel.append('title').text((d) => `[관리역] ${d.properties.name}  클릭하여 상세 보기`);
       });
 
-    // 보통역·무인역: 중간 원 + 역명
-    pointGroups.filter((d) => d.properties.type === '역' && d.properties.station_type !== '관리역' && d.properties.station_type !== '신호장' && d.properties.station_type !== '신호소')
-      .call((sel) => {
-        sel.append('circle')
-          .attr('r', 2.5)
-          .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
-          .attr('stroke', 'white')
-          .attr('stroke-width', 1)
-          .attr('vector-effect', 'non-scaling-stroke');
-        sel.append('text')
-          .attr('x', 5)
-          .attr('y', 3)
-          .attr('font-size', '10px')
-          .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
-          .style('pointer-events', 'none')
-          .text((d) => d.properties.name);
-        sel.append('title').text((d) => `[${d.properties.station_type}] ${d.properties.name}  클릭하여 상세 보기`);
-      });
+    // 보통역·무인역·(미분류): 중간 원 + 역명
+    pointGroups.filter((d) =>
+      d.properties.type === '역' &&
+      d.properties.station_type !== '관리역' &&
+      d.properties.station_type !== '신호장' &&
+      d.properties.station_type !== '신호소'
+    ).call((sel) => {
+      sel.append('circle').attr('r', 2.5)
+        .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
+        .attr('stroke', 'white').attr('stroke-width', 1).attr('vector-effect', 'non-scaling-stroke');
+      sel.append('text').attr('x', 5).attr('y', 3).attr('font-size', '10px')
+        .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
+        .style('pointer-events', 'none').text((d) => d.properties.name);
+      sel.append('title').text((d) => `[${d.properties.station_type}] ${d.properties.name}  클릭하여 상세 보기`);
+    });
 
     // 신호장·신호소: 작은 다이아몬드
-    pointGroups.filter((d) => d.properties.type === '역' && (d.properties.station_type === '신호장' || d.properties.station_type === '신호소'))
-      .call((sel) => {
-        sel.append('polygon')
-          .attr('points', '0,-3 3,0 0,3 -3,0')
-          .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
-          .attr('stroke', 'white').attr('stroke-width', 1)
-          .attr('vector-effect', 'non-scaling-stroke');
-        sel.append('title').text((d) => `[${d.properties.station_type}] ${d.properties.name}  KP ${d.properties.km}km`);
-      });
+    pointGroups.filter((d) =>
+      d.properties.type === '역' &&
+      (d.properties.station_type === '신호장' || d.properties.station_type === '신호소')
+    ).call((sel) => {
+      sel.append('polygon').attr('points', '0,-3 3,0 0,3 -3,0')
+        .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
+        .attr('stroke', 'white').attr('stroke-width', 1).attr('vector-effect', 'non-scaling-stroke');
+      sel.append('title').text((d) => `[${d.properties.station_type}] ${d.properties.name}  KP ${d.properties.km}km`);
+    });
 
-    // 변전소: 사각형
+    // 변전소/전기설비: 사각형 (station_type에 따라 색상 구분)
     pointGroups.filter((d) => d.properties.type === '변전소')
       .call((sel) => {
-        sel.append('rect')
-          .attr('x', -4).attr('y', -4).attr('width', 8).attr('height', 8)
-          .attr('fill', LEGEND_COLORS.변전소)
+        sel.append('rect').attr('x', -4).attr('y', -4).attr('width', 8).attr('height', 8)
+          .attr('fill', (d) => facilityColor(d.properties.type, d.properties.station_type))
           .attr('stroke', 'white').attr('stroke-width', 1)
           .attr('vector-effect', 'non-scaling-stroke');
         sel.append('title').text((d) => `[${d.properties.station_type ?? '변전소'}] ${d.properties.name}  KP ${d.properties.km}km`);
@@ -725,32 +777,25 @@ export default function RailwayMap({
     pointGroups.filter((d) => d.properties.type === '구조물' && d.properties.station_type === '건널목')
       .call((sel) => {
         const s = 4;
-        sel.append('line')
-          .attr('x1', -s).attr('y1', -s).attr('x2', s).attr('y2', s)
-          .attr('stroke', LEGEND_COLORS.건널목).attr('stroke-width', 2)
-          .attr('vector-effect', 'non-scaling-stroke');
-        sel.append('line')
-          .attr('x1', s).attr('y1', -s).attr('x2', -s).attr('y2', s)
-          .attr('stroke', LEGEND_COLORS.건널목).attr('stroke-width', 2)
-          .attr('vector-effect', 'non-scaling-stroke');
+        sel.append('line').attr('x1', -s).attr('y1', -s).attr('x2', s).attr('y2', s)
+          .attr('stroke', LEGEND_COLORS.건널목).attr('stroke-width', 2).attr('vector-effect', 'non-scaling-stroke');
+        sel.append('line').attr('x1', s).attr('y1', -s).attr('x2', -s).attr('y2', s)
+          .attr('stroke', LEGEND_COLORS.건널목).attr('stroke-width', 2).attr('vector-effect', 'non-scaling-stroke');
         sel.append('title').text((d) => `[건널목] ${d.properties.name}  KP ${d.properties.km}km`);
       });
 
     // 분기: 다이아몬드
     pointGroups.filter((d) => d.properties.type === '구조물' && d.properties.station_type === '분기')
       .call((sel) => {
-        sel.append('polygon')
-          .attr('points', '0,-5 5,0 0,5 -5,0')
-          .attr('fill', LEGEND_COLORS.분기)
-          .attr('stroke', 'white').attr('stroke-width', 1)
+        sel.append('polygon').attr('points', '0,-5 5,0 0,5 -5,0')
+          .attr('fill', LEGEND_COLORS.분기).attr('stroke', 'white').attr('stroke-width', 1)
           .attr('vector-effect', 'non-scaling-stroke');
         sel.append('title').text((d) => `[분기] ${d.properties.name}  KP ${d.properties.km}km`);
       });
 
-    // 초기 가시성 적용
     _updateFacilityVisibility(scaleRef.current);
 
-  }, [mergedFacilityFeatures]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mergedFacilityFeatures, allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 줌 컨트롤 핸들러 ─────────────────────────────────────────────────────
   function handleZoomIn() {
@@ -772,6 +817,20 @@ export default function RailwayMap({
     );
   }
 
+  // ── 범례 파생 ────────────────────────────────────────────────────────────
+  const showStationLegend = facilityFilter != null && (
+    facilityFilter.역관리역 || facilityFilter.역보통역 || facilityFilter.역무인역 ||
+    facilityFilter.역신호장 || facilityFilter.역신호소
+  );
+  const showStructLegend  = facilityFilter != null && (
+    facilityFilter.구조물터널 || facilityFilter.구조물교량 || facilityFilter.구조물과선교 ||
+    facilityFilter.구조물건널목 || facilityFilter.구조물분기
+  );
+  const showElecLegend    = facilityFilter != null && (
+    facilityFilter.전기변전소 || facilityFilter.전기전기실 ||
+    facilityFilter.전기통신실 || facilityFilter.전기신호기계실
+  );
+
   // ── 렌더 ─────────────────────────────────────────────────────────────────
   return (
     <div className="relative w-full h-full bg-[#e8edf2]">
@@ -787,7 +846,6 @@ export default function RailwayMap({
             left: facilityPopup.x + 12,
             top:  facilityPopup.y - 8,
             maxWidth: 240,
-            // 화면 오른쪽 가장자리 넘침 방지는 CSS transform으로 처리
             transform: facilityPopup.x > (svgRef.current?.clientWidth ?? 0) - 260
               ? 'translateX(-110%)'
               : undefined,
@@ -813,98 +871,159 @@ export default function RailwayMap({
         </div>
       )}
 
-      {/* 범례 */}
-      <div className="absolute bottom-4 left-4 bg-white/90 rounded-lg shadow px-3 py-2 text-xs space-y-1 border">
-        <div className="font-medium text-gray-600 mb-1">노선 구분</div>
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-6 h-px bg-gray-700" />
-          <span className="text-gray-600">일반선 (공식)</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-6 h-px bg-red-600" />
-          <span className="text-gray-600">고속선 (공식)</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="#9ca3af" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-          <span className="text-gray-400">SHP 참조</span>
-        </div>
-        {mergedFacilityFeatures.length > 0 && (
-          <>
-            <div className="border-t pt-1 mt-1 font-medium text-gray-600">시설물 — 역</div>
-            {(['관리역', '보통역', '신호장'] as const).map((k) => (
-              <div key={k} className="flex items-center gap-2">
-                <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: LEGEND_COLORS[k] }} />
-                <span className="text-gray-600">{k}</span>
+      {/* 좌하단 범례: 차단구간·관할구간 (데이터 있을 때만) */}
+      {((blockSegments && blockSegments.features.length > 0) || showOrgBoundary) && (
+        <div className="absolute bottom-4 left-4 bg-white/90 rounded-lg shadow px-3 py-2 text-xs space-y-1 border">
+          {blockSegments && blockSegments.features.length > 0 && (
+            <>
+              <div className="font-medium text-gray-600">차단구간</div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-1.5 rounded" style={{ backgroundColor: BLOCK_DIR_COLORS.UP }} />
+                <span className="text-gray-600">상선 (UP)</span>
               </div>
-            ))}
-            <div className="border-t pt-1 mt-1 font-medium text-gray-600">구조물</div>
-            {(['터널', '교량', '건널목'] as const).map((k) => (
-              <div key={k} className="flex items-center gap-2">
-                <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: LEGEND_COLORS[k] }} />
-                <span className="text-gray-600">{k}</span>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-1.5 rounded" style={{ backgroundColor: BLOCK_DIR_COLORS.DOWN }} />
+                <span className="text-gray-600">하선 (DOWN)</span>
               </div>
-            ))}
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: LEGEND_COLORS.변전소 }} />
-              <span className="text-gray-600">변전소</span>
-            </div>
-          </>
-        )}
-        {blockSegments && blockSegments.features.length > 0 && (
-          <>
-            <div className="border-t pt-1 mt-1 font-medium text-gray-600">차단구간</div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-6 h-1.5 rounded" style={{ backgroundColor: BLOCK_DIR_COLORS.UP }} />
-              <span className="text-gray-600">상선 (UP)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-6 h-1.5 rounded" style={{ backgroundColor: BLOCK_DIR_COLORS.DOWN }} />
-              <span className="text-gray-600">하선 (DOWN)</span>
-            </div>
-          </>
-        )}
-        {showOrgBoundary && (
-          <>
-            <div className="border-t pt-1 mt-1 font-medium text-gray-600">관할 구간</div>
-            {Object.entries(FIELD_COLORS).map(([field, color]) => (
-              <div key={field} className="flex items-center gap-2">
-                <span className="inline-block w-6 h-1 rounded" style={{ backgroundColor: color }} />
-                <span className="text-gray-600">{field === 'all' ? '전체' : field}</span>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
+              {showDangerZone && (
+                <>
+                  <div className="border-t pt-1 mt-1 font-medium text-gray-600">구간 표시</div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-6 h-2 rounded" style={{ backgroundColor: 'rgba(239,68,68,0.4)' }} />
+                    <span className="text-gray-600">위험지구 2m</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-6 h-2 rounded" style={{ backgroundColor: 'rgba(249,115,22,0.2)' }} />
+                    <span className="text-gray-600">보호지구 30m</span>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          {showOrgBoundary && (
+            <>
+              <div className={`font-medium text-gray-600 ${blockSegments && blockSegments.features.length > 0 ? 'border-t pt-1 mt-1' : ''}`}>관할 구간</div>
+              {Object.entries(FIELD_COLORS).map(([field, color]) => (
+                <div key={field} className="flex items-center gap-2">
+                  <span className="inline-block w-6 h-1 rounded" style={{ backgroundColor: color }} />
+                  <span className="text-gray-600">{field === 'all' ? '전체' : field}</span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
 
       {/* 줌 컨트롤 */}
       <div className="absolute top-4 right-4 flex flex-col items-center gap-1">
-        <button
-          onClick={handleZoomIn}
+        <button onClick={handleZoomIn}
           className="w-8 h-8 bg-white/90 border rounded shadow text-gray-700 hover:bg-gray-100 font-bold text-lg leading-none"
-          title="확대"
-        >+</button>
-        <span
-          ref={zoomDisplayRef}
-          className="text-center text-xs text-gray-600 bg-white/80 rounded px-1 py-0.5 min-w-[2.5rem]"
-        >×1.0</span>
-        <button
-          onClick={handleZoomOut}
+          title="확대">+</button>
+        <span ref={zoomDisplayRef}
+          className="text-center text-xs text-gray-600 bg-white/80 rounded px-1 py-0.5 min-w-[2.5rem]">
+          ×1.0</span>
+        <button onClick={handleZoomOut}
           className="w-8 h-8 bg-white/90 border rounded shadow text-gray-700 hover:bg-gray-100 font-bold text-xl leading-none"
-          title="축소"
-        >−</button>
-        <button
-          onClick={handleZoomReset}
+          title="축소">−</button>
+        <button onClick={handleZoomReset}
           className="mt-1 w-8 h-8 bg-white/90 border rounded shadow text-gray-500 hover:bg-gray-100 text-[10px] leading-none"
-          title="전국 조망"
-        >전체</button>
+          title="전국 조망">전체</button>
       </div>
 
-      {/* 조작 안내 */}
-      <div className="absolute bottom-4 right-4 text-xs text-gray-400 bg-white/80 px-2 py-1 rounded">
-        스크롤·버튼: 확대/축소 · 드래그: 이동
+      {/* 우하단 컬럼: 통합 범례 + 조작 안내 */}
+      <div className="absolute bottom-4 right-4 flex flex-col items-end gap-2">
+
+        {/* 통합 범례 카드: 노선 구분 + 시설물 */}
+        <div className="bg-white/90 rounded-lg shadow px-3 py-2 text-xs space-y-1 border max-h-[60vh] overflow-y-auto">
+          {/* 노선 구분 */}
+          <div className="font-medium text-gray-600">노선 구분</div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-6 h-px bg-gray-700" />
+            <span className="text-gray-600">일반선</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-6 h-px bg-red-600" />
+            <span className="text-gray-600">고속선</span>
+          </div>
+
+          {/* 시설물 범례 (체크된 항목이 있을 때) */}
+          {showStationLegend && (
+            <>
+              <div className="border-t pt-1 mt-0.5 font-medium text-gray-600">역</div>
+              {(
+                [
+                  ['관리역', LEGEND_COLORS.관리역, facilityFilter?.역관리역],
+                  ['보통역', LEGEND_COLORS.보통역, facilityFilter?.역보통역],
+                  ['무인역', LEGEND_COLORS.무인역, facilityFilter?.역무인역],
+                  ['신호장', LEGEND_COLORS.신호장, facilityFilter?.역신호장],
+                  ['신호소', LEGEND_COLORS.신호소, facilityFilter?.역신호소],
+                ] as [string, string, boolean | undefined][]
+              ).filter(([,, on]) => on).map(([k, c]) => (
+                <div key={k} className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: c }} />
+                  <span className="text-gray-600">{k}</span>
+                </div>
+              ))}
+            </>
+          )}
+          {showStructLegend && (
+            <>
+              <div className="border-t pt-1 mt-0.5 font-medium text-gray-600">구조물</div>
+              {(
+                [
+                  ['터널',   LEGEND_COLORS.터널,   facilityFilter?.구조물터널],
+                  ['교량',   LEGEND_COLORS.교량,   facilityFilter?.구조물교량],
+                  ['과선교', LEGEND_COLORS.교량,   facilityFilter?.구조물과선교],
+                  ['건널목', LEGEND_COLORS.건널목, facilityFilter?.구조물건널목],
+                  ['분기',   LEGEND_COLORS.분기,   facilityFilter?.구조물분기],
+                ] as [string, string, boolean | undefined][]
+              ).filter(([,, on]) => on).map(([k, c]) => (
+                <div key={k} className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: c }} />
+                  <span className="text-gray-600">{k}</span>
+                </div>
+              ))}
+            </>
+          )}
+          {showElecLegend && (
+            <>
+              <div className="border-t pt-1 mt-0.5 font-medium text-gray-600">전기설비</div>
+              {facilityFilter!.전기변전소 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded shrink-0" style={{ backgroundColor: LEGEND_COLORS.변전소 }} />
+                  <span className="text-gray-600">변전소</span>
+                </div>
+              )}
+              {facilityFilter!.전기전기실 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded shrink-0" style={{ backgroundColor: LEGEND_COLORS.전기실 }} />
+                  <span className="text-gray-600">전기실</span>
+                </div>
+              )}
+              {facilityFilter!.전기통신실 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded shrink-0" style={{ backgroundColor: LEGEND_COLORS.통신실 }} />
+                  <span className="text-gray-600">통신실</span>
+                </div>
+              )}
+              {facilityFilter!.전기신호기계실 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 rounded shrink-0" style={{ backgroundColor: LEGEND_COLORS.신호기계실 }} />
+                  <span className="text-gray-600">신호기계실</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* 조작 안내 */}
+        <div className="text-xs text-gray-400 bg-white/80 px-2 py-1 rounded">
+          스크롤·버튼: 확대/축소 · 드래그: 이동
+        </div>
+
       </div>
 
-      {!allGeo && (
+      {!allRailGeo && (
         <div className="absolute inset-0 flex items-center justify-center text-gray-400">
           노선도 데이터를 불러오는 중...
         </div>

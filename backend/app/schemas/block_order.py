@@ -39,13 +39,14 @@ class BlockOrderCreate(BaseModel):
     train_watcher_phone: str | None = None
     reason: str | None = None
     safety_items: str | None = None
+    track_name: str | None = None
     note: str | None = None
 
     @field_validator("direction")
     @classmethod
     def validate_direction(cls, v: str) -> str:
-        if v not in ("UP", "DOWN"):
-            raise ValueError("direction은 'UP' 또는 'DOWN' 이어야 합니다")
+        if v not in ("UP", "DOWN", "BOTH"):
+            raise ValueError("direction은 'UP', 'DOWN', 'BOTH' 중 하나여야 합니다")
         return v
 
 
@@ -82,6 +83,7 @@ class BlockOrderUpdate(BaseModel):
     train_watcher_phone: str | None = None
     reason: str | None = None
     safety_items: str | None = None
+    track_name: str | None = None
     note: str | None = None
 
 
@@ -120,6 +122,7 @@ class BlockOrderResponse(BaseModel):
     train_watcher_phone: str | None
     reason: str | None
     safety_items: str | None
+    track_name: str | None
     document_path: str | None
     note: str | None
     created_by: int

@@ -4,6 +4,7 @@ import { createBlockOrder, updateBlockOrder, parsePdfForBlockOrder } from '../..
 import { fetchRoutes } from '../../api/routes';
 import { fetchOrganizations } from '../../api/organizations';
 import { fetchFacilities } from '../../api/facilities';
+import { fetchDepotRoutes } from '../../api/map';
 import { useAuthStore } from '../../store/authStore';
 import type { BlockOrder, BlockOrderCreate } from '../../types';
 import type { AxiosError } from 'axios';
@@ -18,6 +19,7 @@ interface Props {
 const ALL_FIELDS = ['시설', '전기', '건축'];
 const BLOCK_TYPES = ['단선차단', '복선차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
 const POWER_CUT_TYPE = '전차선단전';
+type RouteType = 'line' | 'depot';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -25,7 +27,9 @@ function today() {
 
 const EMPTY: BlockOrderCreate = {
   route_id: 0,
+  rail_route_id: null,
   direction: 'DOWN',
+  track_name: null,
   start_km: 0,
   end_km: 0,
   section_note: '',
@@ -64,6 +68,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
   const availableFields = userField ? [userField] : ALL_FIELDS;
 
   const { data: routes = [] } = useQuery({ queryKey: ['routes'], queryFn: fetchRoutes });
+  const { data: depots = [] } = useQuery({ queryKey: ['depot-routes'], queryFn: fetchDepotRoutes, staleTime: Infinity });
   const { data: orgs = [] } = useQuery({
     queryKey: ['organizations'],
     queryFn: fetchOrganizations,
@@ -113,12 +118,18 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
         }
   );
 
-  // 노선 목록 로드 후 기본값 설정 (신규 등록 시)
+  // 노선 유형: 'line'=일반 본선, 'depot'=기지
+  const [routeType, setRouteType] = useState<RouteType>(() =>
+    initial?.rail_route_id && !initial?.route_id ? 'depot' : 'line'
+  );
+  const isDepot = routeType === 'depot';
+
+  // 노선 목록 로드 후 기본값 설정 (신규 등록, 본선 모드)
   useEffect(() => {
-    if (!initial && routes.length > 0 && form.route_id === 0) {
+    if (!initial && !isDepot && routes.length > 0 && form.route_id === 0) {
       setForm((f) => ({ ...f, route_id: routes[0].id }));
     }
-  }, [routes, initial, form.route_id]);
+  }, [routes, initial, isDepot, form.route_id]);
 
   // org_admin: 자기 조직 자동 설정
   useEffect(() => {
@@ -132,8 +143,8 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
   // 전차선 단전 시 변전소 목록 (선택된 노선의 SUBSTATION 시설물)
   const { data: substations = [] } = useQuery({
     queryKey: ['facilities-substation', form.route_id],
-    queryFn: () => fetchFacilities({ route_id: form.route_id, type: 'SUBSTATION' }),
-    enabled: form.route_id > 0,
+    queryFn: () => fetchFacilities({ route_id: form.route_id ?? 0, type: 'SUBSTATION' }),
+    enabled: (form.route_id ?? 0) > 0,
     staleTime: 60_000,
   });
 
@@ -219,11 +230,15 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
 
     const isPowerCut = form.block_type === POWER_CUT_TYPE;
 
-    if (form.route_id === 0) { setError('노선을 선택하세요.'); return; }
+    if (isDepot) {
+      if (!form.rail_route_id) { setError('기지를 선택하세요.'); return; }
+    } else {
+      if (form.route_id === 0) { setError('노선을 선택하세요.'); return; }
+    }
     if (isPowerCut) {
       if (!form.start_facility_id) { setError('시작 변전소를 선택하세요.'); return; }
       if (!form.end_facility_id)   { setError('종료 변전소를 선택하세요.'); return; }
-    } else {
+    } else if (!isDepot) {
       if ((form.start_km ?? 0) >= (form.end_km ?? 0)) {
         setError('종료 거리정은 시작 거리정보다 커야 합니다.'); return;
       }
@@ -233,8 +248,12 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
 
     const payload: BlockOrderCreate = {
       ...form,
-      start_km: isPowerCut ? null : form.start_km,
-      end_km:   isPowerCut ? null : form.end_km,
+      // 기지 모드: route_id=null, rail_route_id=기지 ID
+      route_id:      isDepot ? null : form.route_id,
+      rail_route_id: isDepot ? form.rail_route_id : form.rail_route_id,
+      track_name:    isDepot ? (form.track_name?.trim() || null) : null,
+      start_km:      isPowerCut || isDepot ? null : form.start_km,
+      end_km:        isPowerCut || isDepot ? null : form.end_km,
       start_facility_id: isPowerCut ? form.start_facility_id : null,
       end_facility_id:   isPowerCut ? form.end_facility_id   : null,
       section_note: form.section_note?.trim() || undefined,
@@ -329,87 +348,148 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
             )}
           </Field>
 
+          {/* 노선 유형 탭 */}
+          <div className="flex gap-2 text-sm">
+            <button
+              type="button"
+              onClick={() => { setRouteType('line'); setForm((f) => ({ ...f, rail_route_id: null, track_name: null, direction: 'DOWN' })); }}
+              className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${!isDepot ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+            >
+              본선 작업
+            </button>
+            <button
+              type="button"
+              onClick={() => { setRouteType('depot'); setForm((f) => ({ ...f, route_id: 0, start_km: null, end_km: null, direction: 'BOTH' })); }}
+              className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${isDepot ? 'bg-orange-600 text-white border-orange-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+            >
+              기지 작업
+            </button>
+          </div>
+
           {/* 노선·방향 */}
           <div className="grid grid-cols-2 gap-4">
-            <Field label="노선 *">
-              <select
-                value={form.route_id}
-                onChange={(e) => set('route_id', Number(e.target.value))}
-                className={SELECT}
-                required
-              >
-                <option value={0} disabled>선택</option>
-                {routes.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-            </Field>
+            {isDepot ? (
+              <Field label="기지 *">
+                <select
+                  value={form.rail_route_id ?? ''}
+                  onChange={(e) => set('rail_route_id', e.target.value ? Number(e.target.value) : null)}
+                  className={SELECT}
+                  required
+                >
+                  <option value="">기지 선택</option>
+                  {depots.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}{d.route_category ? ` (${d.route_category})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label="노선 *">
+                <select
+                  value={form.route_id ?? 0}
+                  onChange={(e) => set('route_id', Number(e.target.value))}
+                  className={SELECT}
+                  required
+                >
+                  <option value={0} disabled>선택</option>
+                  {routes.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <Field label="방향 *">
               <select
                 value={form.direction}
-                onChange={(e) => set('direction', e.target.value as 'UP' | 'DOWN')}
+                onChange={(e) => set('direction', e.target.value as 'UP' | 'DOWN' | 'BOTH')}
                 className={SELECT}
               >
-                <option value="DOWN">하선 (DOWN)</option>
-                <option value="UP">상선 (UP)</option>
+                {isDepot ? (
+                  <>
+                    <option value="BOTH">전체 (상하선)</option>
+                    <option value="UP">상선 (UP)</option>
+                    <option value="DOWN">하선 (DOWN)</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="DOWN">하선 (DOWN)</option>
+                    <option value="UP">상선 (UP)</option>
+                  </>
+                )}
               </select>
             </Field>
           </div>
 
-          {/* 거리정 / 변전소 — 전차선단전 여부에 따라 전환 */}
-          {form.block_type === POWER_CUT_TYPE ? (
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="시작 변전소 (SP/SS/SSP) *">
-                <select
-                  value={form.start_facility_id ?? ''}
-                  onChange={(e) => set('start_facility_id', e.target.value ? Number(e.target.value) : null)}
-                  className={SELECT}
-                >
-                  <option value="">변전소 선택</option>
-                  {substations.map((f) => (
-                    <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="종료 변전소 (SP/SS/SSP) *">
-                <select
-                  value={form.end_facility_id ?? ''}
-                  onChange={(e) => set('end_facility_id', e.target.value ? Number(e.target.value) : null)}
-                  className={SELECT}
-                >
-                  <option value="">변전소 선택</option>
-                  {substations.map((f) => (
-                    <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
-                  ))}
-                </select>
-              </Field>
-              {substations.length === 0 && (
-                <p className="col-span-2 text-xs text-amber-600">
-                  이 노선에 등록된 변전소가 없습니다. 시설물 관리에서 SUBSTATION을 먼저 등록하세요.
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="시작 거리정 (km) *">
-                <input
-                  type="number" step="0.1" min="0"
-                  value={form.start_km ?? 0}
-                  onChange={(e) => set('start_km', Number(e.target.value))}
-                  className={INPUT}
-                  required
-                />
-              </Field>
-              <Field label="종료 거리정 (km) *">
-                <input
-                  type="number" step="0.1" min="0"
-                  value={form.end_km ?? 0}
-                  onChange={(e) => set('end_km', Number(e.target.value))}
-                  className={INPUT}
-                  required
-                />
-              </Field>
-            </div>
+          {/* 기지 선로/구역명 */}
+          {isDepot && (
+            <Field label="선로/구역명">
+              <input
+                type="text"
+                value={form.track_name ?? ''}
+                onChange={(e) => set('track_name', e.target.value || null)}
+                placeholder="예: 유치선1, 검수선A, 전체"
+                className={INPUT}
+              />
+            </Field>
+          )}
+
+          {/* 거리정 / 변전소 — 기지 모드에서는 숨김 */}
+          {!isDepot && (
+            form.block_type === POWER_CUT_TYPE ? (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="시작 변전소 (SP/SS/SSP) *">
+                  <select
+                    value={form.start_facility_id ?? ''}
+                    onChange={(e) => set('start_facility_id', e.target.value ? Number(e.target.value) : null)}
+                    className={SELECT}
+                  >
+                    <option value="">변전소 선택</option>
+                    {substations.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="종료 변전소 (SP/SS/SSP) *">
+                  <select
+                    value={form.end_facility_id ?? ''}
+                    onChange={(e) => set('end_facility_id', e.target.value ? Number(e.target.value) : null)}
+                    className={SELECT}
+                  >
+                    <option value="">변전소 선택</option>
+                    {substations.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
+                    ))}
+                  </select>
+                </Field>
+                {substations.length === 0 && (
+                  <p className="col-span-2 text-xs text-amber-600">
+                    이 노선에 등록된 변전소가 없습니다. 시설물 관리에서 SUBSTATION을 먼저 등록하세요.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="시작 거리정 (km) *">
+                  <input
+                    type="number" step="0.1" min="0"
+                    value={form.start_km ?? 0}
+                    onChange={(e) => set('start_km', Number(e.target.value))}
+                    className={INPUT}
+                    required
+                  />
+                </Field>
+                <Field label="종료 거리정 (km) *">
+                  <input
+                    type="number" step="0.1" min="0"
+                    value={form.end_km ?? 0}
+                    onChange={(e) => set('end_km', Number(e.target.value))}
+                    className={INPUT}
+                    required
+                  />
+                </Field>
+              </div>
+            )
           )}
 
           {/* 일시 */}

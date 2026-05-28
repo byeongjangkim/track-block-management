@@ -6,54 +6,61 @@
 
 | 데이터 종류 | 저장 위치 | 설명 |
 |---|---|---|
-| **노선 geometry** | `route_geometry` DB 테이블 | SHP·CSV 입력, km 보간, LOD 자동 생성 |
+| **노선 geometry (최종 SOT)** | `rail_computed_geometry` DB 테이블 | baseline anchor 보간 생성, 고속선/일반선 대분류 지원, 77개 노선 |
 | **시도·시군구 경계** | `maps/data/*.geojson` 정적 파일 | NGII 데이터 전처리, 서버 파일 서빙 |
+
+> `route_geometry` 테이블은 2026-05-27 Alembic `a0b1c2d3e4f5` 마이그레이션으로 완전 제거됨.
 
 ---
 
-## 1. 노선 geometry (route_geometry 테이블)
+## 1. 노선 geometry 아키텍처
 
-### source 컬럼으로 레이어 분리
+### 1-1. KP 기반 보간 원칙
 
-| source | 입력 | km | 표시 |
-|---|---|---|---|
-| `shp` | 국가기본도 SHP 파싱 | NULL | 점선·흐린 색 (참조용) |
-| `user` | 관리자 CSV 업로드 | 필수 | 실선·진한 색 (공식) |
+노선도는 역·시설물의 **KP(거리정) + GPS(위도·경도)**를 anchor로 삼아 좌표를 보간 생성한다.
 
-**원칙:** user 데이터가 있는 노선은 user 레이어만 표시. shp 데이터는 user 업로드 완료 후 삭제.
-
-### segment 번호 기준
-
-| segment | 의미 |
-|---|---|
-| `0` | 선로 중앙선 (본선 대표, Phase 1 현재 이것만 사용) |
-| `1` | 하선(Down) / T1 (고속) |
-| `2` | 상선(Up) / T2 (고속) |
-| `3+` | 추가 선로, 역구내 측선 |
-
-### 데이터 흐름
-
-**경로 A — SHP import (source='shp')**
-```bash
-cd maps && source ../backend/.venv/bin/activate
-python3 pipeline/import_shp_to_geometry.py --route gyeongbu  # 단일
-python3 pipeline/import_shp_to_geometry.py --all              # 전체
-```
-
-**경로 B — CSV 직접 업로드 (source='user')**
-```
-CSV 컬럼: segment, seq, lat, lon, km
-```
-- 웹 UI: 노선도 관리 → CSV 업로드
-- 업로드 시 기존 user 데이터 교체, LOD(mid·low) 자동 생성
-
-### LOD 전환 기준 (D3 줌 스케일 k 기준)
-
-| D3 줌 k | LOD | 목표 간격 |
+| anchor 유형 | 원천 테이블 | point_type |
 |---|---|---|
-| k < 3 | `low` | 10 km |
-| 3 ≤ k < 8 | `mid` | 2 km |
-| k ≥ 8 | `high` | 500 m |
+| 역 중심 | `rail_route_station_points.center_kp` | `station_center` |
+| 역 구내 시작 | `rail_route_station_points.yard_start_kp` | `station_yard_start` |
+| 역 구내 종료 | `rail_route_station_points.yard_end_kp` | `station_yard_end` |
+| 점 시설물 | `rail_facilities.kp_start` | `facility_point` |
+| 구간 시설물 시작 | `rail_facilities.kp_start` | `facility_start` |
+| 구간 시설물 종료 | `rail_facilities.kp_end` | `facility_end` |
+| 수동 보정점 | 직접 입력 | `manual_control` |
+
+**보간 방법:** 같은 노선·segment 내에서 KP 순으로 정렬 후 인접 anchor 두 점 간 선형 보간.
+
+### 1-2. 고속선 / 일반선 대분류
+
+`rail_routes.line_type` 컬럼으로 DB 레벨 분류.  
+`rail_computed_geometry.line_type`은 역정규화 값(JOIN 없이 필터 가능).
+
+| line_type | 해당 노선 (2026-05-27 기준) | 색상 |
+|---|---|---|
+| `고속선` | 경부고속선(H1), 호남고속선(H2) | `#dc2626` (빨강) |
+| `일반선` | 나머지 141개 노선 | `#374151` (진회색) |
+
+고속선 추가 시: `UPDATE rail_routes SET line_type = '고속선' WHERE korail_route_code = 'Hx';`
+
+### 1-3. rail_computed_geometry 현황 (2026-05-27)
+
+| 항목 | 값 |
+|---|---|
+| 보유 노선 수 | 77개 (rail_baseline_points ≥ 2 anchor) |
+| 전체 좌표 수 | 16,295점 (high LOD 기준) |
+| LOD 레벨 | high / mid / low (각각 ~0.5km / ~2km / ~10km 간격) |
+| D3 렌더링 레이어 | `routes-computed` |
+| 미표시 노선 | 10개 소규모 화물선/지선 (anchor 부족 → baseline 추가 시 자동 복구) |
+
+**미표시 10개 노선:** 부전마산선·북전주선·북평선·대불선·덕산선·군산선·군산항선·화순선·진해선·온산선
+
+재계산 API:
+```
+POST /api/v1/admin/rail-routes/rebuild-computed
+  body: {} (전체) | {"route_ids": [1,2,...]} (선택)
+  권한: system_superuser 전용
+```
 
 ---
 
@@ -66,6 +73,8 @@ maps/data/
 ├── korea_map_level1.geojson   # 17개 시도 경계 (315 KB)
 └── korea_map_level2.geojson   # 255개 시군구 경계 (1.2 MB, NGII 38MB 원본에서 단순화)
 ```
+
+> **주의:** 이 파일들은 대한민국 지도 배경이므로 절대 삭제하거나 변경하지 않는다.
 
 ### 생성 방식 — Level 1 (시도)
 
@@ -153,12 +162,12 @@ maps/
 │   ├── add_route.py                  # 신규 노선 추가 통합
 │   ├── download_osm.py               # Overpass API → osm_korea.geojson
 │   ├── extract_routes.py             # osm_korea.geojson → 노선별 GeoJSON 분리
-│   ├── import_geometry.py            # 노선 GeoJSON → route_geometry DB
-│   ├── import_shp_to_geometry.py     # SHP → route_geometry source='shp'
+│   ├── rebuild_computed_geometry.py  # rail_baseline_points → rail_computed_geometry 보간
+│   ├── import_facilities.py          # 시설물 CSV → rail_facilities DB
 │   └── seed_org_viewport.py          # org_viewport 초기값 DB 입력
 ├── data/
-│   ├── korea_map_level1.geojson      # 17개 시도 (unary_union 생성)
-│   ├── korea_map_level2.geojson      # 255개 시군구 (NGII 기반)
+│   ├── korea_map_level1.geojson      # 17개 시도 (unary_union 생성) — 삭제 금지
+│   ├── korea_map_level2.geojson      # 255개 시군구 (NGII 기반) — 삭제 금지
 │   └── stations.csv                  # 역 마스터 (replace_stations.py 입력)
 └── raw/
     └── railway_line/
@@ -172,5 +181,5 @@ maps/
 | 문서 | 내용 |
 |---|---|
 | [ROUTE_MANAGEMENT.md](ROUTE_MANAGEMENT.md) | 51개 노선 등록 현황 |
-| [../database/CLAUDE.md](../database/CLAUDE.md) | route_geometry 스키마 상세 |
-| [../backend/CLAUDE.md](../backend/CLAUDE.md) | /map/sigungu API, geometry 관리 API |
+| [../database/CLAUDE.md](../database/CLAUDE.md) | rail_computed_geometry 스키마 상세 |
+| [../backend/CLAUDE.md](../backend/CLAUDE.md) | /map/sigungu API, rail-routes geometry API |

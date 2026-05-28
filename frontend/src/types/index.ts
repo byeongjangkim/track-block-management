@@ -1,4 +1,26 @@
-export type Direction = 'UP' | 'DOWN';
+export type Direction = 'UP' | 'DOWN' | 'BOTH';
+
+// 차단현황도 시설물 분류 필터
+// 역: station_type별 세분화 / 구조물·전기설비: 세부 시설물 유형별
+export interface FacilityFilter {
+  // 역
+  역관리역:       boolean;  // 관리역
+  역보통역:       boolean;  // 보통역
+  역무인역:       boolean;  // 무인역
+  역신호장:       boolean;  // 신호장
+  역신호소:       boolean;  // 신호소
+  // 구조물
+  구조물터널:     boolean;  // 터널 (LineString)
+  구조물교량:     boolean;  // 교량 (LineString)
+  구조물과선교:   boolean;  // 과선교 (LineString)
+  구조물건널목:   boolean;  // 건널목 (Point)
+  구조물분기:     boolean;  // 분기 (Point)
+  // 전기설비 (변전소만 현재 map 데이터 존재)
+  전기변전소:     boolean;  // 변전소 ss/sp/ssp/atp/pp
+  전기전기실:     boolean;  // 전기실 AC/DC (데이터 준비중)
+  전기통신실:     boolean;  // 통신실 (데이터 준비중)
+  전기신호기계실: boolean;  // 신호기계실 IEC/INEC (데이터 준비중)
+}
 
 export type FacilityType =
   | 'STATION'
@@ -65,13 +87,14 @@ export interface BlockOrder {
   train_watcher_phone: string | null;
   reason: string | null;
   safety_items: string | null;
+  track_name: string | null;
   document_path: string | null;
   note: string | null;
   created_by: number;
 }
 
 export interface BlockOrderCreate {
-  route_id: number;
+  route_id: number | null;
   rail_route_id?: number | null;
   organization_id?: number;
   direction: Direction;
@@ -104,6 +127,7 @@ export interface BlockOrderCreate {
   train_watcher_phone?: string;
   reason?: string;
   safety_items?: string;
+  track_name?: string | null;
   note?: string;
 }
 

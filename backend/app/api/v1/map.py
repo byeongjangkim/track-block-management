@@ -1,16 +1,17 @@
 """
 map.py — 노선도 geometry API
 
-  GET /map/routes/all/geometry        ← 전체 노선
-  GET /map/routes/{code}/geometry     ← 단일 노선
-  GET /map/routes/{code}/facilities   ← 노선 시설물 GeoJSON (km 보간 포함)
-  GET /map/organizations/{id}/boundaries  ← 조직 관할 구간 경계
+  GET /map/rail-routes/all/geometry       ← rail_computed_geometry 전체 노선 (line_type 포함)
+  GET /map/rail-routes/all/stations       ← KP 기반 역 위치 (rail_baseline_points station_center)
+  GET /map/organizations/{id}/boundaries  ← 조직 관할 구간 경계 (KP 기반)
   GET /map/organizations/{id}/viewport    ← 조직 초기 뷰 설정
+  GET /map/rail-route-region-boundaries   ← 노선별 구역 경계 GeoJSON
   GET /map/block-orders/segments          ← 차단명령 구간 GeoJSON (날짜 필터)
-  GET /map/sigungu?level=1|2              ← 시도/시군구 경계 GeoJSON (정적 파일)
+  GET /map/sigungu?level=1|2              ← 시도/시군구 경계 GeoJSON (정적 파일, 대한민국 지도)
 """
 
 import json
+import re
 from datetime import date as date_type
 from functools import lru_cache
 from pathlib import Path
@@ -26,115 +27,63 @@ from app.models.org_viewport import OrgViewport
 from app.models.organization import Organization, OrganizationRouteRange
 from app.models.rail_baseline import RailRoute, RailRouteRegionBoundary
 from app.models.route import Route
-from app.models.route_geometry import RouteGeometry
 from app.models.user import User
 
 router = APIRouter(prefix="/map", tags=["노선도"])
 
-SOURCE_PRIORITY = ("user", "shp")  # user 우선, 없으면 shp
 
+# ── rail_computed_geometry 전체 노선 ─────────────────────────────────────
+# 주의: /rail-routes/{id}/... 보다 먼저 등록
 
-# ── 전체 노선 geometry ────────────────────────────────────────────────────
-# 주의: /routes/{code}/geometry 보다 먼저 등록해야 'all'이 code로 매칭되지 않음
-
-@router.get("/routes/all/geometry")
-def get_all_routes_geometry(
+@router.get("/rail-routes/all/geometry")
+def get_all_rail_routes_geometry(
+    lod: str = Query("high", pattern="^(high|mid|low)$"),
+    line_type: str | None = Query(None, description="고속선 | 일반선"),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # (route_code, source) 조합 — user 있으면 user만, 없으면 shp
-    route_codes = db.execute(
-        text("SELECT DISTINCT route_code FROM route_geometry ORDER BY route_code")
-    ).scalars().all()
+    """rail_computed_geometry 기반 전체 노선 GeoJSON.
+
+    properties에 korail_route_code, route_name, line_type 포함.
+    line_type 파라미터로 고속선/일반선 필터 가능.
+    """
+    where_type = "AND rcg.line_type = :line_type" if line_type else ""
+    rows = db.execute(
+        text(f"""
+            SELECT
+                rcg.rail_route_id,
+                rr.korail_route_code,
+                rr.name  AS route_name,
+                rcg.line_type,
+                rcg.lat,
+                rcg.lon,
+                rcg.seq
+            FROM rail_computed_geometry rcg
+            JOIN rail_routes rr ON rr.id = rcg.rail_route_id
+            WHERE rcg.lod = :lod {where_type}
+            ORDER BY rcg.rail_route_id, rcg.seq
+        """),
+        {"lod": lod, **({"line_type": line_type} if line_type else {})},
+    ).fetchall()
+
+    from itertools import groupby as _groupby
 
     features = []
-    for code in route_codes:
-        # user 우선, 없으면 shp
-        source = db.execute(
-            text("SELECT source FROM route_geometry WHERE route_code=:code AND source='user' LIMIT 1"),
-            {"code": code},
-        ).scalar() or "shp"
-
-        segments = db.execute(
-            text("SELECT DISTINCT segment FROM route_geometry "
-                 "WHERE route_code=:code AND source=:src AND lod='high' ORDER BY segment"),
-            {"code": code, "src": source},
-        ).scalars().all()
-
-        for seg in segments:
-            rows = (
-                db.query(RouteGeometry.lat, RouteGeometry.lon)
-                .filter(
-                    RouteGeometry.route_code == code,
-                    RouteGeometry.source == source,
-                    RouteGeometry.lod == "high",
-                    RouteGeometry.segment == seg,
-                )
-                .order_by(RouteGeometry.seq)
-                .all()
-            )
-            if not rows:
-                continue
-            coordinates = [[row.lon, row.lat] for row in rows]
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "route_code":  code,
-                    "source":      source,
-                    "segment":     seg,
-                    "point_count": len(coordinates),
-                },
-                "geometry": {"type": "LineString", "coordinates": coordinates},
-            })
-
-    return {"type": "FeatureCollection", "features": features}
-
-
-# ── 단일 노선 geometry ────────────────────────────────────────────────────
-
-@router.get("/routes/{code}/geometry")
-def get_route_geometry(
-    code: str,
-    _: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    source = db.execute(
-        text("SELECT source FROM route_geometry WHERE route_code=:code AND source='user' LIMIT 1"),
-        {"code": code},
-    ).scalar() or "shp"
-
-    segments = db.execute(
-        text("SELECT DISTINCT segment FROM route_geometry "
-             "WHERE route_code=:code AND source=:src AND lod='high' ORDER BY segment"),
-        {"code": code, "src": source},
-    ).scalars().all()
-
-    if not segments:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"노선 '{code}' 데이터 없음")
-
-    features = []
-    for seg in segments:
-        rows = (
-            db.query(RouteGeometry.lat, RouteGeometry.lon)
-            .filter(
-                RouteGeometry.route_code == code,
-                RouteGeometry.source == source,
-                RouteGeometry.lod == "high",
-                RouteGeometry.segment == seg,
-            )
-            .order_by(RouteGeometry.seq)
-            .all()
-        )
-        if not rows:
+    for route_id, pts in _groupby(rows, key=lambda r: r.rail_route_id):
+        pts_list = list(pts)
+        if not pts_list:
             continue
-        coordinates = [[row.lon, row.lat] for row in rows]
+        first = pts_list[0]
+        coordinates = [[r.lon, r.lat] for r in pts_list]
         features.append({
             "type": "Feature",
             "properties": {
-                "route_code":  code,
-                "source":      source,
-                "segment":     seg,
-                "point_count": len(coordinates),
+                "rail_route_id":     route_id,
+                "korail_route_code": first.korail_route_code,
+                "route_name":        first.route_name,
+                "line_type":         first.line_type,
+                "lod":               lod,
+                "point_count":       len(coordinates),
             },
             "geometry": {"type": "LineString", "coordinates": coordinates},
         })
@@ -142,7 +91,97 @@ def get_route_geometry(
     return {"type": "FeatureCollection", "features": features}
 
 
-# ── 조직 관할 구간 경계 ───────────────────────────────────────────────────
+# ── 기지 노선 목록 (line_type='기지') ──────────────────────────────────────
+
+@router.get("/rail-routes/depots")
+def get_depot_routes(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """차단명령 등록 폼용 기지 노선 목록. line_type='기지'인 rail_routes만 반환."""
+    rows = db.query(RailRoute).filter(
+        RailRoute.line_type == "기지",
+        RailRoute.is_active.is_(True),
+    ).order_by(RailRoute.name).all()
+    return [
+        {
+            "id":                 r.id,
+            "name":               r.name,
+            "korail_route_code":  r.korail_route_code,
+            "start_kp":           r.start_kp,
+            "end_kp":             r.end_kp,
+            "route_category":     r.route_category,
+        }
+        for r in rows
+    ]
+
+
+# ── KP 기반 역 위치 (rail_baseline_points station_center) ─────────────────
+
+@router.get("/rail-routes/all/stations")
+def get_all_rail_stations(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """rail_baseline_points(station_center) 기반 전 노선 역 위치 GeoJSON.
+
+    GPS 좌표는 실측 anchor 값 — km 보간이 아닌 실좌표.
+    FacilityCollection 형식으로 반환하여 기존 시설물 레이어와 병합 가능.
+    """
+    rows = db.execute(
+        text("""
+            SELECT
+                rbp.id,
+                rr.korail_route_code,
+                rr.name   AS route_name,
+                rbp.kp,
+                rbp.lat,
+                rbp.lon,
+                rs.name   AS station_name,
+                rs.station_type,
+                rs.station_role
+            FROM rail_baseline_points rbp
+            JOIN rail_routes rr ON rr.id = rbp.rail_route_id
+            JOIN rail_stations rs ON rs.id = rbp.station_id
+            WHERE rbp.point_type = 'station_center'
+              AND rbp.is_interpolation_anchor = 1
+              AND rbp.lat IS NOT NULL
+              AND rbp.lon IS NOT NULL
+              AND rbp.station_id IS NOT NULL
+            ORDER BY rbp.rail_route_id, rbp.kp
+        """)
+    ).fetchall()
+
+    features = []
+    for r in rows:
+        station_type = r.station_type or (
+            '관리역' if r.station_role == '관리역' else '보통역'
+        )
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "id":            r.id,
+                "type":          "역",
+                "station_type":  station_type,
+                "name":          r.station_name,
+                "km":            r.kp,
+                "km_end":        None,
+                "direction":     None,
+                "has_station_map": False,
+                "note":          None,
+                "route_code":    r.korail_route_code,
+                "route_name":    r.route_name,
+            },
+            "geometry": {
+                "type":        "Point",
+                "coordinates": [r.lon, r.lat],
+            },
+        })
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+# ── 조직 관할 구간 경계 (KP 기반) ─────────────────────────────────────────
 
 @router.get("/organizations/{org_id}/boundaries")
 def get_org_boundaries(
@@ -166,55 +205,32 @@ def get_org_boundaries(
         if not route:
             continue
 
-        source = db.execute(
-            text("SELECT source FROM route_geometry WHERE route_code=:code AND source='user' LIMIT 1"),
-            {"code": route.code},
-        ).scalar() or "shp"
+        # rail_routes 이름으로 매칭 (괄호 접미사 제거 후 재시도: "경부고속선 (KTX)" → "경부고속선")
+        base_name = re.sub(r'\s*\([^)]*\)\s*$', '', route.name).strip()
+        rail_route = db.query(RailRoute).filter(
+            (RailRoute.name == route.name) | (RailRoute.name == base_name)
+        ).first()
 
-        segments = db.execute(
-            text("SELECT DISTINCT segment FROM route_geometry "
-                 "WHERE route_code=:code AND source=:src AND lod='high' ORDER BY segment"),
-            {"code": route.code, "src": source},
-        ).scalars().all()
+        if not rail_route:
+            continue
 
-        for seg in segments:
-            rows = (
-                db.query(RouteGeometry.seq, RouteGeometry.lat, RouteGeometry.lon, RouteGeometry.km)
-                .filter(
-                    RouteGeometry.route_code == route.code,
-                    RouteGeometry.source == source,
-                    RouteGeometry.lod == "high",
-                    RouteGeometry.segment == seg,
-                )
-                .order_by(RouteGeometry.seq)
-                .all()
-            )
-            if not rows:
-                continue
+        coords = _rail_kp_range_coords(db, rail_route.id, rng.start_km, rng.end_km)
+        if len(coords) < 2:
+            continue
 
-            has_km = any(r.km is not None for r in rows)
-            if has_km:
-                segment_rows = [r for r in rows if r.km is not None and rng.start_km <= r.km <= rng.end_km]
-            else:
-                segment_rows = rows
-
-            if not segment_rows:
-                continue
-
-            coordinates = [[r.lon, r.lat] for r in segment_rows]
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "organization_id":   org_id,
-                    "organization_name": org.name,
-                    "route_code":        route.code,
-                    "route_name":        route.name,
-                    "field":             rng.field,
-                    "start_km":          rng.start_km,
-                    "end_km":            rng.end_km,
-                },
-                "geometry": {"type": "LineString", "coordinates": coordinates},
-            })
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "organization_id":   org_id,
+                "organization_name": org.name,
+                "route_code":        route.code,
+                "route_name":        route.name,
+                "field":             rng.field,
+                "start_km":          rng.start_km,
+                "end_km":            rng.end_km,
+            },
+            "geometry": {"type": "LineString", "coordinates": coords},
+        })
 
     return {"type": "FeatureCollection", "features": features}
 
@@ -250,62 +266,7 @@ def get_org_viewport(
     }
 
 
-# ── km → (lat, lon) 보간 헬퍼 ────────────────────────────────────────────
-
-def _interpolate_km(db: Session, route_code: str, km: float) -> tuple[float, float] | None:
-    rows = db.execute(
-        text("""
-            SELECT lat, lon, km FROM route_geometry
-            WHERE route_code=:code AND source='user' AND lod='high' AND km IS NOT NULL
-            ORDER BY km
-        """),
-        {"code": route_code},
-    ).fetchall()
-
-    if not rows:
-        return None
-    if km <= rows[0].km:
-        return (rows[0].lat, rows[0].lon)
-    if km >= rows[-1].km:
-        return (rows[-1].lat, rows[-1].lon)
-
-    for i in range(len(rows) - 1):
-        a, b = rows[i], rows[i + 1]
-        if a.km <= km <= b.km:
-            t = (km - a.km) / (b.km - a.km)
-            return (a.lat + t * (b.lat - a.lat), a.lon + t * (b.lon - a.lon))
-
-    return None
-
-
-def _km_range_coords(db: Session, route_code: str, start_km: float, end_km: float) -> list[list[float]]:
-    rows = db.execute(
-        text("""
-            SELECT lat, lon, km FROM route_geometry
-            WHERE route_code=:code AND source='user' AND lod='high' AND km IS NOT NULL
-            ORDER BY km
-        """),
-        {"code": route_code},
-    ).fetchall()
-
-    if not rows:
-        return []
-
-    coords: list[list[float]] = []
-    start_pt = _interpolate_km(db, route_code, start_km)
-    if start_pt:
-        coords.append([start_pt[1], start_pt[0]])
-
-    for r in rows:
-        if start_km < r.km < end_km:
-            coords.append([r.lon, r.lat])
-
-    end_pt = _interpolate_km(db, route_code, end_km)
-    if end_pt:
-        coords.append([end_pt[1], end_pt[0]])
-
-    return coords
-
+# ── KP → (lat, lon) 보간 헬퍼 (rail_baseline_points 기반) ─────────────────
 
 def _interpolate_rail_kp(db: Session, rail_route_id: int, kp: float) -> tuple[float, float] | None:
     rows = db.execute(
@@ -373,7 +334,7 @@ def _rail_kp_range_coords(db: Session, rail_route_id: int, start_kp: float, end_
     return coords
 
 
-# ── 노선 시설물 GeoJSON ───────────────────────────────────────────────────
+# ── 노선별 구역 경계 GeoJSON ─────────────────────────────────────────────
 
 @router.get("/rail-route-region-boundaries")
 def get_rail_route_region_boundaries(
@@ -424,61 +385,6 @@ def get_rail_route_region_boundaries(
     return {"type": "FeatureCollection", "features": features}
 
 
-@router.get("/routes/{code}/facilities")
-def get_route_facilities(
-    code: str,
-    _: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    route = db.query(Route).filter(Route.code == code).first()
-    if not route:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"노선 '{code}' 없음")
-
-    facilities = (
-        db.query(Facility)
-        .filter(Facility.route_id == route.id)
-        .order_by(Facility.km)
-        .all()
-    )
-
-    features = []
-    for f in facilities:
-        if f.lat is not None and f.lon is not None:
-            start_coord = (f.lat, f.lon)
-        else:
-            start_coord = _interpolate_km(db, code, f.km)
-
-        if start_coord is None:
-            continue
-
-        props = {
-            "id":              f.id,
-            "type":            f.type,
-            "station_type":    f.station_type,
-            "name":            f.name,
-            "km":              f.km,
-            "km_end":          f.km_end,
-            "direction":       f.direction,
-            "has_station_map": f.has_station_map,
-            "note":            f.note,
-            "route_code":      route.code,
-            "route_name":      route.name,
-        }
-
-        if f.km_end is not None and f.type == "구조물":
-            coords = _km_range_coords(db, code, f.km, f.km_end)
-            if len(coords) < 2:
-                geometry = {"type": "Point", "coordinates": [start_coord[1], start_coord[0]]}
-            else:
-                geometry = {"type": "LineString", "coordinates": coords}
-        else:
-            geometry = {"type": "Point", "coordinates": [start_coord[1], start_coord[0]]}
-
-        features.append({"type": "Feature", "properties": props, "geometry": geometry})
-
-    return {"type": "FeatureCollection", "features": features}
-
-
 # ── 차단명령 구간 GeoJSON ─────────────────────────────────────────────────
 
 @router.get("/block-orders/segments")
@@ -518,14 +424,20 @@ def get_block_order_segments(
         end_kp = bo.end_kp if bo.end_kp is not None else bo.end_km
 
         if start_kp is None and end_kp is None:
+            # 전차선 단전 구간 — 시설물 GPS 직접 사용
             section_type = "power_cut"
             f_start = db.query(Facility).filter(Facility.id == bo.start_facility_id).first() \
                 if bo.start_facility_id else None
             f_end   = db.query(Facility).filter(Facility.id == bo.end_facility_id).first() \
                 if bo.end_facility_id else None
-            if f_start is None or f_end is None or legacy_route is None:
+            if f_start is None or f_end is None:
                 continue
-            coords = _km_range_coords(db, legacy_route.code, f_start.km, f_end.km)
+            if f_start.lat and f_start.lon and f_end.lat and f_end.lon:
+                coords = [[f_start.lon, f_start.lat], [f_end.lon, f_end.lat]]
+            elif bo.rail_route_id and f_start.km is not None and f_end.km is not None:
+                coords = _rail_kp_range_coords(db, bo.rail_route_id, f_start.km, f_end.km)
+            else:
+                continue
             display_km = f"{f_start.km}~{f_end.km}"
             section_note = bo.section_note or f"{f_start.name}~{f_end.name}"
         else:
@@ -537,8 +449,6 @@ def get_block_order_segments(
                 if bo.rail_route_id
                 else []
             )
-            if len(coords) < 2 and legacy_route is not None:
-                coords = _km_range_coords(db, legacy_route.code, start_kp, end_kp)
             display_km = f"{start_kp}~{end_kp}"
             section_note = bo.section_note
 
@@ -574,7 +484,7 @@ def get_block_order_segments(
     return {"type": "FeatureCollection", "features": features, "work_date": target_date.isoformat()}
 
 
-# ── 시군구 배경 지도 (정적 GeoJSON 파일) ──────────────────────────────────────
+# ── 시군구 배경 지도 (정적 GeoJSON 파일 — 대한민국 지도, 삭제 금지) ─────────────
 
 _MAP_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent / "maps" / "data"
 

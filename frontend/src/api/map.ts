@@ -1,18 +1,5 @@
 import { api } from './client';
 
-export interface RouteFeature {
-  type: 'Feature';
-  // segment: linemerge 결과 조각 — 노선당 여러 개일 수 있음
-  // source: 'shp' = 국가기본도 참조 (점선), 'user' = 관리자 업로드 (실선)
-  properties: { route_code: string; source: string; segment: number; point_count: number };
-  geometry: { type: 'LineString'; coordinates: [number, number][] };
-}
-
-export interface RouteFeatureCollection {
-  type: 'FeatureCollection';
-  features: RouteFeature[];
-}
-
 export interface OrgBoundaryFeature {
   type: 'Feature';
   properties: {
@@ -32,13 +19,51 @@ export interface OrgBoundaryCollection {
   features: OrgBoundaryFeature[];
 }
 
-export async function fetchAllGeometry(): Promise<RouteFeatureCollection> {
-  const res = await api.get<RouteFeatureCollection>('/map/routes/all/geometry');
+// ── rail_computed_geometry 기반 노선 (line_type 포함) ────────────────────
+
+export interface RailRouteFeature {
+  type: 'Feature';
+  properties: {
+    rail_route_id:     number;
+    korail_route_code: string;
+    route_name:        string;
+    line_type:         '고속선' | '일반선';
+    lod:               string;
+    point_count:       number;
+  };
+  geometry: { type: 'LineString'; coordinates: [number, number][] };
+}
+
+export interface RailRouteFeatureCollection {
+  type: 'FeatureCollection';
+  features: RailRouteFeature[];
+}
+
+// ── 기지 노선 목록 ────────────────────────────────────────────────────────
+
+export interface DepotRoute {
+  id: number;
+  name: string;
+  korail_route_code: string;
+  start_kp: number | null;
+  end_kp: number | null;
+  route_category: string | null;  // '차량기지' | '보수기지' | '전기기지'
+}
+
+export async function fetchDepotRoutes(): Promise<DepotRoute[]> {
+  const res = await api.get<DepotRoute[]>('/map/rail-routes/depots');
   return res.data;
 }
 
-export async function fetchRouteGeometry(code: string): Promise<RouteFeature> {
-  const res = await api.get<RouteFeature>(`/map/routes/${code}/geometry`);
+export async function fetchAllRailRouteGeometry(lod = 'high'): Promise<RailRouteFeatureCollection> {
+  const res = await api.get<RailRouteFeatureCollection>('/map/rail-routes/all/geometry', {
+    params: { lod },
+  });
+  return res.data;
+}
+
+export async function fetchAllRailStations(): Promise<FacilityCollection> {
+  const res = await api.get<FacilityCollection>('/map/rail-routes/all/stations');
   return res.data;
 }
 
@@ -118,11 +143,6 @@ export interface FacilityFeature {
 export interface FacilityCollection {
   type: 'FeatureCollection';
   features: FacilityFeature[];
-}
-
-export async function fetchRouteFacilities(routeCode: string): Promise<FacilityCollection> {
-  const res = await api.get<FacilityCollection>(`/map/routes/${routeCode}/facilities`);
-  return res.data;
 }
 
 // ── 차단명령 구간 GeoJSON ──────────────────────────────────────────────────

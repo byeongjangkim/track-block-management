@@ -1,25 +1,28 @@
 # 선로차단작업 관리 프로그램
 
-한국철도공사(KORAIL) 전국 선로차단작업 승인 내역을 통합 관리하는 웹 기반 프로그램.
-12개 지역본부 + 2개 사업단(고속시설·고속전기), 전국 51개 노선을 단일 시스템에서 관리한다.
+KORAIL 전국 선로차단작업 승인 내역 통합 관리 웹 앱.  
+14개 조직(지역본부 12 + 사업단 2), 전국 51개 노선을 단일 시스템에서 관리한다.
 
 ---
 
 ## 문서 구조 정책
 
-> **이 파일(루트 CLAUDE.md)은 프로젝트 전체 개요와 도메인 핵심 개념만 다룬다.**
-> 구현 세부사항(API, 스키마, 컴포넌트, GIS 파이프라인 등)은 각 파트 문서에 위임한다.
->
-> - **코드 수정 후 문서 업데이트:** 해당 파트의 CLAUDE.md만 수정한다. 루트는 건드리지 않는다.
-> - **루트 CLAUDE.md 업데이트:** 프로젝트 전체에 영향을 주는 변경(Phase 전환, 조직 추가, 도메인 개념 변경)이 있을 때만 수정한다.
+- 이 파일은 **핵심 개념 + 개발 규칙 전체**를 담는다. 루트 CLAUDE.md 하나로 관리한다.
+- 구현 세부사항(DB 스키마 전체, GIS 파이프라인)은 `docs/` 참조 문서에 위임한다.
+- 코드 수정 후 → 이 파일만 업데이트한다.
 
 ---
 
-## 개발/운영 환경
+## 개발 환경 및 포트
 
-- **서버:** MacBook M2 14 (arm64, macOS 15, 사내망 LAN 연결)
-- **개발 도구:** Claude Code + VSCode
-- **Python:** 3.12 · **Node.js:** 22 · **패키지 관리:** Homebrew · **Docker:** 미사용
+| 항목 | 값 |
+|---|---|
+| 서버 | MacBook M2 14 (arm64, macOS 15, 사내망 LAN) |
+| Python | 3.12 |
+| Node.js | 22 |
+| 백엔드 포트 | **8000** |
+| 프론트엔드 포트 | **5173** |
+| DB | `backend/db.sqlite3` (SQLite, Phase 1) |
 
 ---
 
@@ -27,50 +30,153 @@
 
 ```
 track-block-management/
-├── backend/        ← FastAPI API 서버          → backend/CLAUDE.md
-├── frontend/       ← React SPA                → frontend/CLAUDE.md, frontend/UI_UX.md
-├── maps/           ← GIS 파이프라인            → maps/CLAUDE.md, maps/ROUTE_MANAGEMENT.md
-├── database/       ← DB 스키마·시드 데이터     → database/CLAUDE.md
-├── scripts/        ← 유틸리티 스크립트         → scripts/CLAUDE.md
-└── docs/           ← 기타 문서
+├── backend/        ← FastAPI API 서버
+├── frontend/       ← React SPA
+├── maps/           ← GIS 파이프라인
+├── database/       ← DB 시드 데이터
+├── scripts/        ← 유틸리티 스크립트
+└── docs/           ← 참조 문서 (DATABASE.md, MAPS.md 등)
 ```
 
 ---
 
-## 기술 스택 (요약)
+## 기술 스택 요약
 
-| 구분 | Phase 1 (현재, SQLite) | Phase 2+ (운영, PostgreSQL) |
-|---|---|---|
-| 백엔드 | FastAPI + Uvicorn | 동일 |
-| 프론트엔드 | React 18 + TypeScript + Vite + D3.js v7 | 빌드 후 Nginx/Caddy 정적 서빙 |
-| 데이터베이스 | SQLite (파일 기반) | PostgreSQL 15 |
-| 인증 | JWT (python-jose + passlib) | 동일 |
-| 노선도 GIS | route_geometry 테이블 (DB SOT) | 동일 |
-| 리버스 프록시 | 없음 (직접 포트 접속) | Caddy 또는 Nginx |
-
-> 라이브러리 버전, 서버 실행 명령, 환경변수 → [backend/CLAUDE.md](backend/CLAUDE.md), [frontend/CLAUDE.md](frontend/CLAUDE.md)
-
----
-
-## 로컬 서비스 포트
-
-| 서비스 | 포트 |
+| 계층 | 기술 |
 |---|---|
-| 백엔드 API | 8000 |
-| 프론트엔드 | 5173 |
-
-> 실행 명령 → [backend/CLAUDE.md](backend/CLAUDE.md) · [frontend/CLAUDE.md](frontend/CLAUDE.md)
+| 백엔드 | FastAPI + SQLAlchemy 2.x (SQLite) + Alembic + JWT |
+| 프론트엔드 | React 18 + TypeScript + Vite + D3.js v7 + Tailwind CSS v4 |
+| GIS | `rail_computed_geometry` (KP 보간, 77노선) + 정적 GeoJSON 지도 |
 
 ---
 
-## 개발 단계 (Phase)
+## 백엔드 개발
 
-| Phase | 주요 내용 | DB | 상태 |
-|---|---|---|---|
-| Phase 1 | DB 스키마, 권한, 노선도 geometry, 차단명령 CRUD | SQLite | **진행 중** |
-| Phase 2 | 관할구간 km 슬라이싱, LOD 자동 전환, PostgreSQL 전환 | PostgreSQL | 대기 |
-| Phase 3 | 역구내 배선도, 통계, 모바일 | PostgreSQL | 대기 |
-| Phase 4 | Linux 서버 이전, 알림, 보고서 | PostgreSQL | 검토 |
+### 서버 실행
+
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+최초 설치:
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # SECRET_KEY 직접 입력
+alembic upgrade head
+```
+
+### 환경변수 (.env — git 제외)
+
+```
+DATABASE_URL=sqlite:///./db.sqlite3
+SECRET_KEY=<랜덤 문자열>
+ACCESS_TOKEN_EXPIRE_MINUTES=480
+UPLOAD_DIR=./uploads
+```
+
+### 새 패키지 추가 — 필수 4단계
+
+```bash
+pip install <패키지명>                           # 1. venv 설치
+# requirements.txt에 추가 (직접 편집)            # 2. 파일에 기재
+python3 -c "import app.main; print('import OK')"  # 3. import 확인
+curl -m 5 http://localhost:8000/api/health         # 4. 서버 응답 확인
+```
+
+> 누락 시 uvicorn이 import 오류로 멈춰 모든 API가 응답 불가 상태가 된다.
+
+### 주요 API 카테고리
+
+| 카테고리 | 접두사 | 비고 |
+|---|---|---|
+| 인증 | `/api/v1/auth/` | |
+| 조직·관할구간 | `/api/v1/organizations/` | |
+| 노선·시설물 | `/api/v1/routes/`, `/api/v1/facilities/` | |
+| 차단명령 | `/api/v1/block-orders/` | PDF bulk 파싱 포함 |
+| 문서·PDF | `/api/v1/documents/` | |
+| 지도·GIS | `/api/v1/map/` | sigungu, rail-routes, org-boundaries, depots 등 |
+| 시설물 관리·어드민 | `/api/v1/admin/` | org_admin+ / superuser |
+
+---
+
+## 프론트엔드 개발
+
+### 개발 시작
+
+```bash
+cd frontend
+npm install
+npm run dev -- --host 0.0.0.0   # LAN: http://[맥IP]:5173
+```
+
+```bash
+# .env.local (git 제외)
+VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
+```
+
+### 주요 파일
+
+| 파일 | 역할 |
+|---|---|
+| `src/App.tsx` | React Router 라우트 + RequireAuth 가드 |
+| `src/pages/BlockMapPage.tsx` | 차단현황도 ★ 메인 (`?date=YYYY-MM-DD`) |
+| `src/components/map/RailwayMap.tsx` | D3.js 전국 노선도 |
+| `src/components/common/Layout.tsx` | 헤더 네비게이션 (역할별 메뉴) |
+| `src/store/authStore.ts` | Zustand 로그인 상태 |
+| `src/api/map.ts` | geometry, org-boundaries, block-segments |
+
+### D3 렌더링 — 절대 규칙
+
+**한국 지도 (절대 변경 금지):**
+- `GET /api/v1/map/sigungu?level=2` → 시도(17개) + 시군구(255개) 동시 로드
+- 시도: `SIDO_FILLS` 4색 채움 (투명도 0.15) + `stroke '#6b8299'` 1.0px
+- 시군구: `fill none` + `stroke '#8fa5b8'` 0.5px, zoom ≥ 1.5에서만 표시
+- `vector-effect: non-scaling-stroke` 필수
+
+**노선도:**
+- `hiddenLineTypes: Set<'고속선'|'일반선'>` — D3 path `display` 속성 직접 갱신 (React 리렌더링 없음)
+- 줌 임계값: `ZOOM_STATION=0.8` / `ZOOM_SEGMENT=3` / `ZOOM_DETAIL=8`
+
+| D3 레이어 | 소스 | 색상 |
+|---|---|---|
+| `routes-computed` | `rail_computed_geometry` (77노선) | 고속선 `#dc2626` / 일반선 `#374151` |
+| `org-boundaries` | `OrganizationRouteRange` | 분야별 |
+| `danger-zones` | `block-segments` 재사용 | 위험(8px/28%) / 보호(20px/12%) |
+| `block-segments` | `/map/block-orders/segments` | UP `#ef4444` / DOWN `#f97316` |
+| `facility-points` | `facilities` 테이블 | 역종별, 전기설비 종류별 |
+
+**시설물 분류 필터 (`FacilityFilter`):**  
+14개 키: `역관리역`, `역보통역`, `역무인역`, `역신호장`, `역신호소`, `구조물터널`, `구조물교량`, `구조물과선교`, `구조물건널목`, `구조물분기`, `전기변전소`, `전기전기실`, `전기통신실`, `전기신호기계실`
+
+- 기본값: **전체 14개 항목 `true`** (초기 로드 시 모든 시설물 표시)
+- 역 5개 항목은 각각 개별 필터 키로 관리 (관리역·보통역·무인역 분리, 신호장·신호소 분리)
+- `facilities.type='변전소'` + `station_type`으로 전기설비 세부 구분:  
+  `ss/sp/ssp/atp/pp` → 변전소 / `전기실` → 전기실 / `통신실` → 통신실 / `신호기계실` → 신호기계실
+- CSV 업로드 헤더: `종류,소분류,이름,시작km,종료km,시작위도,시작경도,방향,역배선도,비고`  
+  (`소분류` 열이 2026-05에 추가됨; 미입력 시 `station_type=NULL` 저장)
+
+**줌 임계값 (역 세분화 후):**
+- `ZOOM_STATION=0.8`: 관리역 표시 시작 (zoom ≥ 0.8)
+- `ZOOM_STATION2=3`: 보통역·무인역·신호장·신호소 표시 시작 (zoom ≥ 3)
+- `ZOOM_SEGMENT=3`: 구조물 LineString(터널·교량·과선교) 표시
+- `ZOOM_DETAIL=8`: 변전소·건널목·분기 표시
+
+**D3 race condition 방지:**  
+`facility-points` 렌더링 useEffect의 deps에 `allRailGeo` 포함 — `railStations`가 캐시에서 즉시 로드될 때 `allRailGeo` 미초기화 시 조기 반환하는 문제 방지.
+
+### 메뉴 구조
+
+| 메뉴 | 경로 | 접근 |
+|---|---|---|
+| 차단현황도 | `/block-map` | 전체 |
+| 차단명령 | `/block-orders` | 전체 |
+| 캘린더 | `/calendar` | 전체 |
+| 시설물 관리 | `/admin/facilities` | org_admin+ |
+| 담당구역 관리 | `/admin/org-ranges` | superuser |
+| 사용자 관리 | `/admin/users` | superuser |
 
 ---
 
@@ -78,40 +184,45 @@ track-block-management/
 
 ### 조직 구조
 
-전국 **14개 조직** (지역본부 12 + 사업단 2)이 노선별·분야별로 관할 구간을 나눠 관리한다.
-
-- 지역본부 12개 + 사업단 2개 (highspeed_facility, highspeed_electric)
+- 지역본부 12개 + 사업단 2개 (고속시설·고속전기) = **14개 조직**
 - 동일 고속선 구간에 지역본부(행정)와 사업단(분야 유지보수)이 **중복 공존**한다.
-
-> 조직 코드 목록·관할구간 스키마 → [database/CLAUDE.md](database/CLAUDE.md)
 
 ### 권한 체계
 
-| 역할 코드 | 설명 |
+| role | 설명 |
 |---|---|
-| `system_superuser` | 전체 CRUD, 크로스-org 등록 가능 |
+| `system_superuser` | 전체 CRUD, 크로스-org 등록, organization_id=NULL |
 | `org_admin` | 자기 조직 관할 구간 내 등록 (field로 분야 제한) |
 | `user` | 전국 차단명령 조회 전용 |
 
-- **분야(field) 코드:** `all` / `시설` / `전기` / `건축`
+- **role 판단은 string 비교만 사용한다.** 불리언 플래그(`isAdmin` 등) 사용 금지.
+- **분야(field) 코드:** `all` / `시설` / `전기` / `건축` — 신호·궤도·토목·통신은 사용하지 않는다.
 
-> 권한 검증 로직, API 의존성 주입 → [backend/CLAUDE.md](backend/CLAUDE.md)
+```typescript
+// 역할 판단 패턴 (TypeScript)
+const canRegister = user?.role === 'org_admin' || user?.role === 'system_superuser';
+const isSuperuser = user?.role === 'system_superuser';
+```
 
 ### 철도 좌표계
 
-- 기준: **노선코드 + 거리정(km)**, 단위 Float, 소수점 1자리 (예: `325.4`)
-- 방향: `UP` (상선, 기점 방향) / `DOWN` (하선, 종점 방향)
+- 기준: **노선코드 + 거리정(KP/km)**, 단위 Float, 소수점 1자리 (예: `325.4`)
+- 방향: `UP` (상선, 기점 방향) / `DOWN` (하선, 종점 방향) / `BOTH` (기지 전체 작업)
+- `km`과 `KP`는 같은 의미이다.
+
+### 기지 노선 (line_type = '기지')
+
+차량기지·보수기지는 `rail_routes`에 `line_type='기지'`로 별도 등록. KP는 인출선 분기점 기산(0.0).  
+차단명령 등록 시: `BlockOrderForm`의 **기지 작업 탭** → `rail_route_id`(기지 ID) + `track_name`(선로명) 사용.  
+`GET /api/v1/map/rail-routes/depots` — 기지 목록 반환 (폼 드롭다운용).  
+기지 작업은 KP 관할구간 검증 생략, org_admin 권한이면 등록 가능.
 
 ### 노선도 GIS
 
-모든 노선 GIS 데이터는 `route_geometry` 테이블에 저장 (DB SOT).
-
-| source | 입력 | km | 표시 |
-|---|---|---|---|
-| `shp` | SHP import (형태 참조용) | NULL | 점선·연한 색 |
-| `user` | 관리자 CSV 업로드 (공식) | 필수 | 실선·진한 색 |
-
-> 파이프라인, LOD, 노선 현황 → [maps/CLAUDE.md](maps/CLAUDE.md), [maps/ROUTE_MANAGEMENT.md](maps/ROUTE_MANAGEMENT.md)
+- 모든 노선 GIS는 `rail_computed_geometry` 단일 SOT (77노선, 16,295점, KP 보간).
+- `rail_baseline_points`: KP + GPS anchor 원천 (station_center 833개 등 2,409점).
+- **대한민국 지도** (`korea_map_level*.geojson`, `sigungu-background` D3 레이어,  
+  `/map/sigungu` API) **절대 삭제·변경 금지.**
 
 ---
 
@@ -119,25 +230,28 @@ track-block-management/
 
 | 항목 | 규칙 |
 |---|---|
-| Python 변수/함수 | snake_case |
-| TypeScript 변수/함수 | camelCase |
+| Python | snake_case |
+| TypeScript | camelCase |
 | API 경로 | `/api/v1/...` |
 | DB 테이블명 | 복수형 snake_case (`block_orders`, `facilities`) |
 | 거리정 | Float, 소수점 1자리, km 단위 |
-| 조직 코드 | 영문 소문자 snake_case |
+| 비밀번호 | bcrypt 해시만 저장. `bcrypt==4.0.1` 고정 (5.x 비호환) |
+| 파일 경로 | 절대경로 금지 — `pathlib.Path(__file__).parent` 기준 상대경로 |
 
 ---
 
-## 서브프로젝트 문서
+## 절대 커밋 금지
 
-| 문서 | 담당 내용 |
+`backend/.env` · `backend/db.sqlite3` · `frontend/.env.local`
+
+---
+
+## 참조 문서
+
+| 문서 | 내용 |
 |---|---|
-| [backend/CLAUDE.md](backend/CLAUDE.md) | FastAPI 서버, API 엔드포인트, 환경변수, 패키지 관리, 검증 체크리스트 |
-| [frontend/CLAUDE.md](frontend/CLAUDE.md) | React SPA, 컴포넌트 구조, 빌드, 상태관리 |
-| [frontend/UI_UX.md](frontend/UI_UX.md) | 설계 원칙, 컬러 팔레트, 공통 컴포넌트 패턴, UX 규칙 |
-| [frontend/UI_UX_pages.md](frontend/UI_UX_pages.md) | 페이지별 UI 명세 (레이아웃·필터·폼 상세) |
-| [database/CLAUDE.md](database/CLAUDE.md) | DB 스키마, ORM 모델, 권한 검증 로직, seed 스크립트, Alembic |
-| [maps/CLAUDE.md](maps/CLAUDE.md) | route_geometry 구조, GIS 파이프라인, source 운영 방침 |
-| [maps/ROUTE_MANAGEMENT.md](maps/ROUTE_MANAGEMENT.md) | 51개 노선 등록 현황, SHP→user 전환 절차 |
-| [scripts/CLAUDE.md](scripts/CLAUDE.md) | 유틸리티 스크립트, 백업, 개발용 샘플 데이터 |
-| [docs/block_order_pdf_parsing.md](docs/block_order_pdf_parsing.md) | 차단명령 PDF 파싱 명세 (파싱 항목·DB 컬럼·연락처·Alembic 이력) |
+| [plan.md](plan.md) | 개발 로드맵, Phase 현황 |
+| [docs/DATABASE.md](docs/DATABASE.md) | DB 스키마 상세, ORM 모델, Alembic |
+| [docs/MAPS.md](docs/MAPS.md) | GIS 파이프라인, LOD, KP 보간, 지도 배경 |
+| [docs/block_order_pdf_parsing.md](docs/block_order_pdf_parsing.md) | PDF 파싱 명세 |
+| [frontend/UI_UX.md](frontend/UI_UX.md) | UI 설계 원칙, 컬러 팔레트, UX 규칙 |

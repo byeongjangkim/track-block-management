@@ -5,6 +5,7 @@ from app.models.facility import Facility
 from app.models.block_order import BlockOrder
 from app.models.rail_baseline import (
     RailBaselinePoint,
+    RailComputedGeometry,
     RailFacility,
     RailFacilityClassification,
     RailFacilityManagementOffice,
@@ -27,6 +28,7 @@ __all__ = [
     "RailStation",
     "RailRouteStationPoint",
     "RailBaselinePoint",
+    "RailComputedGeometry",
     "RailFacility",
     "RailFacilityClassification",
     "RailFacilityManagementOffice",

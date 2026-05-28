@@ -12,6 +12,8 @@ class RailRoute(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     korail_route_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # 고속선 | 일반선 — DB 레벨 분류 (route_code suffix 방식 대체)
+    line_type: Mapped[str] = mapped_column(String(20), nullable=False, default="일반선")
     route_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
     start_station_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     start_station_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -33,6 +35,7 @@ class RailRoute(Base):
     station_points: Mapped[list["RailRouteStationPoint"]] = relationship(back_populates="rail_route")
     baseline_points: Mapped[list["RailBaselinePoint"]] = relationship(back_populates="rail_route")
     facilities: Mapped[list["RailFacility"]] = relationship(back_populates="rail_route")
+    computed_geometry: Mapped[list["RailComputedGeometry"]] = relationship(back_populates="rail_route")
 
 
 class RailStation(Base):
@@ -241,3 +244,25 @@ class RailStationManagementMember(Base):
 
     management_group: Mapped["RailStationManagementGroup"] = relationship(back_populates="members")
     station: Mapped["RailStation"] = relationship(back_populates="management_memberships")
+
+
+class RailComputedGeometry(Base):
+    """역·시설물 KP+GPS anchor에서 보간 생성한 노선 좌표 계열 (최종 노선도 SOT)."""
+
+    __tablename__ = "rail_computed_geometry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rail_route_id: Mapped[int] = mapped_column(ForeignKey("rail_routes.id"), nullable=False)
+    # 역정규화: JOIN 없이 고속선/일반선 필터 가능
+    line_type: Mapped[str] = mapped_column(String(20), nullable=False, default="일반선")
+    kp: Mapped[float] = mapped_column(Float, nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    # station | facility | interpolated | manual
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="interpolated")
+    # high | mid | low
+    lod: Mapped[str] = mapped_column(String(10), nullable=False, default="high")
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.current_timestamp(), nullable=False)
+
+    rail_route: Mapped["RailRoute"] = relationship(back_populates="computed_geometry")

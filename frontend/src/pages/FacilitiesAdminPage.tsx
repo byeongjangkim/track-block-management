@@ -54,7 +54,7 @@ const MAJOR_COLORS: Record<string, string> = {
   전기설비: 'bg-purple-100 text-purple-700',
 };
 
-function classificationLabel(c: RailFacilityClassification) {
+export function classificationLabel(c: RailFacilityClassification) {
   const parts = [c.sub_category];
   if (c.detail_category) parts.push(c.detail_category);
   if (c.tertiary_category) parts.push(c.tertiary_category);
