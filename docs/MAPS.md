@@ -62,6 +62,17 @@ POST /api/v1/admin/rail-routes/rebuild-computed
   권한: system_superuser 전용
 ```
 
+**자동 재계산 (`_rebuild_computed_geometry_route`):**  
+`backend/app/api/v1/rail_reference.py`에 `rebuild_route()`와 동일한 로직을 내부 헬퍼로 구현.  
+`rail_facilities` create/update/delete 시 해당 노선에 대해 자동 호출 → 스크립트 수동 실행 없이 geometry 즉시 갱신.
+
+```python
+# rail_reference.py — 시설물 저장 후 자동 호출 패턴
+_sync_facility_baseline_points(db, facility_id)   # baseline anchor 동기화
+_rebuild_computed_geometry_route(db, rail_route_id)  # rail_computed_geometry 재계산
+db.commit()
+```
+
 ---
 
 ## 2. 배경 지도 — 시도·시군구 경계 (정적 GeoJSON)
@@ -151,6 +162,38 @@ GET /api/v1/map/sigungu?level=2    # 시도 17개 + 시군구 255개
 | 외부 province-level GeoJSON 사용 | 내부 구/시/군 경계 미병합으로 망가진 경계 표시 |
 
 **올바른 방법: Level 2(시군구) → `unary_union` → Level 1(시도) 생성**
+
+---
+
+## 3. rail_facilities 지도 표시
+
+### 3-1. 엔드포인트
+
+```
+GET /api/v1/map/rail-routes/all/facility-items
+  응답: FacilityCollection GeoJSON (is_active=1 시설물 전체)
+  인증: 로그인 사용자 전체
+```
+
+### 3-2. type / station_type 매핑
+
+| `major_category` | D3 type | `station_type` 결정 |
+|---|---|---|
+| `구조물` | `'구조물'` | `sub_category` (터널/교량/과선교/건널목/분기) |
+| `전기설비` | `'변전소'` | `detail_category.lower()` (ss/sp/ssp/atp/pp 등), 없으면 `sub_category.lower()` |
+
+### 3-3. geometry 결정
+
+| 조건 | geometry |
+|---|---|
+| `geometry_type='linear'` AND `lat/lon/lat_end/lon_end` 모두 있음 | `LineString [[lon,lat],[lon_end,lat_end]]` |
+| 그 외 (`lat/lon` 있음) | `Point [lon, lat]` |
+| GPS 없음 | 응답에서 제외 |
+
+### 3-4. D3 렌더링 분기
+
+- **LineString** (터널·교량·과선교): `segLayer` path — `stroke-width 4`, `cursor: pointer`, 클릭 시 팝업 표시 (노선명 + KP 범위)
+- **Point** (건널목·분기·변전소): `pointLayer` g — 기존 역·전기설비와 동일한 `pointGroups` 흐름
 
 ---
 

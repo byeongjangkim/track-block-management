@@ -67,6 +67,11 @@ export async function fetchAllRailStations(): Promise<FacilityCollection> {
   return res.data;
 }
 
+export async function fetchAllRailFacilities(): Promise<FacilityCollection> {
+  const res = await api.get<FacilityCollection>('/map/rail-routes/all/facility-items');
+  return res.data;
+}
+
 export async function fetchOrgBoundaries(orgId: number): Promise<OrgBoundaryCollection> {
   const res = await api.get<OrgBoundaryCollection>(`/map/organizations/${orgId}/boundaries`);
   return res.data;

@@ -1,7 +1,7 @@
 # 개발 계획 (plan.md)
 
 > 프로젝트: 선로차단작업 관리 프로그램 (Track-Block-Management)  
-> 마지막 갱신: 2026-05-28 (Phase D 완료 — 기지 차단작업 KP 기반 관리 인프라 구축)
+> 마지막 갱신: 2026-05-29 (Phase D+ 완료 — rail_facilities 지도 표시 + 시설물 등록 시 geometry 자동 재계산)
 
 ---
 
@@ -16,6 +16,7 @@
 | **Phase C** | `route_geometry` D3 레이어 제거 → `rail_computed_geometry` 단일 렌더링 전환 (50→77 노선 커버리지 확대) | ✅ 완료 |
 | **Phase C+** | `route_geometry` 테이블 완전 제거 (Alembic `a0b1c2d3e4f5`), 관련 API·서비스·파이프라인 전체 삭제, org-boundaries KP 기반 전환, 모든 문서 업데이트 | ✅ 완료 |
 | **Phase D** | 기지 차단작업 KP 기반 관리 인프라 구축, 분류 코드 2종 추가 (`ELEC_SIGNAL_GENERAL`, `ELEC_COMM_RS`) | ✅ 완료 |
+| **Phase D+** | rail_facilities 지도 표시, 시설물 등록 시 geometry 자동 재계산, LineString 시설물 클릭 팝업 | ✅ 완료 |
 
 ---
 
@@ -46,6 +47,40 @@
 | Frontend types | `Direction = 'UP' | 'DOWN' | 'BOTH'`, `BlockOrderCreate.route_id: number | null`, `track_name` 추가 |
 | Frontend api/map.ts | `DepotRoute` 인터페이스 + `fetchDepotRoutes()` |
 | Frontend BlockOrderForm | 본선/기지 탭 전환 UI, 기지 선택 시 선로·구역명 입력, BOTH 방향 옵션 |
+
+---
+
+## Phase D+ 완료 내역 (2026-05-29)
+
+### 1. rail_facilities 지도 표시 ✅
+
+**신규 API:**  
+`GET /api/v1/map/rail-routes/all/facility-items` — `is_active=1` 시설물을 FacilityCollection GeoJSON으로 반환.
+
+| 항목 | 내용 |
+|---|---|
+| 파일 | `backend/app/api/v1/map.py` |
+| `구조물` 분류 | type=`구조물`, station_type=sub_category (터널/교량 등) |
+| `전기설비` 분류 | type=`변전소`, station_type=detail_category.lower() (ss/sp 등) |
+| geometry | linear + 시작·종료 GPS → LineString, 그 외 → Point |
+
+**프론트엔드:**
+
+| 항목 | 내용 |
+|---|---|
+| `frontend/src/api/map.ts` | `fetchAllRailFacilities()` 추가 |
+| `RailwayMap.tsx` | `railFacilitiesData` useQuery (staleTime:0), `mergedFacilityFeatures`에 병합 |
+
+### 2. 시설물 등록·수정·삭제 시 geometry 자동 재계산 ✅
+
+`backend/app/api/v1/rail_reference.py`에 `_rebuild_computed_geometry_route()` 헬퍼 추가.  
+`rail_facilities` create / update / delete 핸들러에서 `_sync_facility_baseline_points()` 직후 자동 호출.  
+`maps/pipeline/rebuild_computed_geometry.py` 스크립트와 동일 로직(3 LOD 선형 보간).
+
+### 3. LineString 시설물 클릭 팝업 수정 ✅
+
+터널·교량·과선교(`segLayer` path)에 `.on('click', ...)` 핸들러 부재로 클릭 시 팝업이 뜨지 않던 버그 수정.  
+`cursor: pointer` + 클릭 시 `setPopupRef` 호출 → 이름·노선명·KP 범위 팝업 표시.
 
 ---
 

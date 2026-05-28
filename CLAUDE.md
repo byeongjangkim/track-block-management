@@ -97,7 +97,7 @@ curl -m 5 http://localhost:8000/api/health         # 4. 서버 응답 확인
 | 노선·시설물 | `/api/v1/routes/`, `/api/v1/facilities/` | |
 | 차단명령 | `/api/v1/block-orders/` | PDF bulk 파싱 포함 |
 | 문서·PDF | `/api/v1/documents/` | |
-| 지도·GIS | `/api/v1/map/` | sigungu, rail-routes, org-boundaries, depots 등 |
+| 지도·GIS | `/api/v1/map/` | sigungu, rail-routes, org-boundaries, facility-items, depots 등 |
 | 시설물 관리·어드민 | `/api/v1/admin/` | org_admin+ / superuser |
 
 ---
@@ -146,7 +146,8 @@ VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
 | `org-boundaries` | `OrganizationRouteRange` | 분야별 |
 | `danger-zones` | `block-segments` 재사용 | 위험(8px/28%) / 보호(20px/12%) |
 | `block-segments` | `/map/block-orders/segments` | UP `#ef4444` / DOWN `#f97316` |
-| `facility-points` | `facilities` 테이블 | 역종별, 전기설비 종류별 |
+| `facility-points` (Point) | `rail_baseline_points` station_center + `rail_facilities` is_active=1 | 역종별, 전기설비·구조물 종류별 |
+| `facility-points` (LineString) | `rail_facilities` geometry_type='linear' | 터널 `#6b7280` / 교량 `#0891b2` / 과선교 `#dc2626` |
 
 **시설물 분류 필터 (`FacilityFilter`):**  
 14개 키: `역관리역`, `역보통역`, `역무인역`, `역신호장`, `역신호소`, `구조물터널`, `구조물교량`, `구조물과선교`, `구조물건널목`, `구조물분기`, `전기변전소`, `전기전기실`, `전기통신실`, `전기신호기계실`
@@ -163,6 +164,23 @@ VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
 - `ZOOM_STATION2=3`: 보통역·무인역·신호장·신호소 표시 시작 (zoom ≥ 3)
 - `ZOOM_SEGMENT=3`: 구조물 LineString(터널·교량·과선교) 표시
 - `ZOOM_DETAIL=8`: 변전소·건널목·분기 표시
+
+**`rail_facilities` 지도 표시:**  
+- `GET /api/v1/map/rail-routes/all/facility-items` — `is_active=1` 시설물 전체 반환 (FacilityCollection GeoJSON)  
+- `구조물` 분류: type=`구조물`, station_type=`sub_category` (터널/교량/과선교/건널목/분기)  
+- `전기설비` 분류: type=`변전소`, station_type=`detail_category.lower()` (ss/sp/ssp 등)  
+- `geometry_type='linear'` + 시작·종료 GPS 모두 있으면 LineString, 아니면 Point  
+- `mergedFacilityFeatures`: `railStations`(역 실좌표) + `railFacilitiesData`(rail_facilities) 병합  
+- 시설물 create/update/delete 시 `_rebuild_computed_geometry_route()` 자동 호출 → `rail_computed_geometry` 즉시 갱신
+
+**`_rebuild_computed_geometry_route(db, rail_route_id)` — `rail_reference.py` 내부 헬퍼:**  
+`rail_baseline_points`(is_interpolation_anchor=1) → 3 LOD(high/mid/low) 선형 보간 → `rail_computed_geometry` 갱신.  
+`maps/pipeline/rebuild_computed_geometry.py`의 `rebuild_route()` 와 동일 로직.  
+시설물 등록·수정·삭제 직후 자동 호출되므로 스크립트 수동 실행 불필요.
+
+**LineString 시설물 클릭 (터널·교량·과선교):**  
+`segLayer` path에 `.on('click', ...)` 핸들러 등록 — 클릭 시 `setPopupRef`로 팝업 표시 (노선명 + KP 범위).  
+`cursor: pointer` 설정으로 클릭 가능 표시.
 
 **D3 race condition 방지:**  
 `facility-points` 렌더링 useEffect의 deps에 `allRailGeo` 포함 — `railStations`가 캐시에서 즉시 로드될 때 `allRailGeo` 미초기화 시 조기 반환하는 문제 방지.
@@ -221,6 +239,7 @@ const isSuperuser = user?.role === 'system_superuser';
 
 - 모든 노선 GIS는 `rail_computed_geometry` 단일 SOT (77노선, 16,295점, KP 보간).
 - `rail_baseline_points`: KP + GPS anchor 원천 (station_center 833개 등 2,409점).
+- `rail_facilities` (`use_as_baseline_anchor=1`, `is_active=1`): 시설물 GPS가 자동으로 baseline anchor 등록 → 시설물 저장 시 해당 노선 geometry 자동 재계산.
 - **대한민국 지도** (`korea_map_level*.geojson`, `sigungu-background` D3 레이어,  
   `/map/sigungu` API) **절대 삭제·변경 금지.**
 

@@ -1,5 +1,6 @@
 import csv
 import io
+from itertools import groupby as _groupby
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import PlainTextResponse
@@ -257,6 +258,88 @@ def _resequence_baseline_route(db: Session, rail_route_id: int) -> None:
             text("UPDATE rail_baseline_points SET seq = :seq, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
             {"seq": seq, "id": row.id},
         )
+
+
+def _rebuild_computed_geometry_route(db: Session, rail_route_id: int) -> None:
+    """rail_baseline_points → rail_computed_geometry 재계산 (단일 노선, 3 LOD)."""
+    route = (
+        db.execute(
+            text("SELECT id, line_type FROM rail_routes WHERE id = :id"),
+            {"id": rail_route_id},
+        )
+        .mappings()
+        .first()
+    )
+    if not route:
+        return
+
+    anchors_all = db.execute(
+        text("""
+            SELECT segment_no, kp, lat, lon
+            FROM rail_baseline_points
+            WHERE rail_route_id = :route_id
+              AND is_interpolation_anchor = 1
+            ORDER BY segment_no, kp
+        """),
+        {"route_id": rail_route_id},
+    ).fetchall()
+
+    if not anchors_all:
+        return
+
+    segments: dict[int, list] = {}
+    for seg_no, pts in _groupby(anchors_all, key=lambda r: r.segment_no):
+        pts_list = list(pts)
+        if len(pts_list) >= 2:
+            segments[seg_no] = pts_list
+
+    if not segments:
+        return
+
+    def _interp(anc: list, interval: float) -> list[tuple[float, float, float]]:
+        out: list[tuple[float, float, float]] = []
+        for i in range(len(anc) - 1):
+            kp1, lat1, lon1 = anc[i].kp, anc[i].lat, anc[i].lon
+            kp2, lat2, lon2 = anc[i + 1].kp, anc[i + 1].lat, anc[i + 1].lon
+            if kp2 <= kp1 + 1e-6:
+                continue
+            out.append((kp1, lat1, lon1))
+            kp = kp1 + interval
+            while kp < kp2 - 1e-6:
+                t = (kp - kp1) / (kp2 - kp1)
+                out.append((kp, lat1 + t * (lat2 - lat1), lon1 + t * (lon2 - lon1)))
+                kp += interval
+        if anc:
+            last = anc[-1]
+            out.append((last.kp, last.lat, last.lon))
+        return out
+
+    for lod, interval in {"high": 0.5, "mid": 2.0, "low": 10.0}.items():
+        db.execute(
+            text("DELETE FROM rail_computed_geometry WHERE rail_route_id = :rid AND lod = :lod"),
+            {"rid": rail_route_id, "lod": lod},
+        )
+        seq = 0
+        for seg_no in sorted(segments):
+            for kp, lat, lon in _interp(segments[seg_no], interval):
+                db.execute(
+                    text("""
+                        INSERT INTO rail_computed_geometry
+                            (rail_route_id, line_type, kp, lat, lon, source, lod, seq)
+                        VALUES
+                            (:rid, :lt, :kp, :lat, :lon, 'interpolated', :lod, :seq)
+                    """),
+                    {
+                        "rid": rail_route_id,
+                        "lt": route["line_type"],
+                        "kp": round(kp, 3),
+                        "lat": round(lat, 6),
+                        "lon": round(lon, 6),
+                        "lod": lod,
+                        "seq": seq,
+                    },
+                )
+                seq += 1
 
 
 def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
@@ -800,6 +883,7 @@ def create_rail_facility(
     )
     facility_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
     _sync_facility_baseline_points(db, facility_id)
+    _rebuild_computed_geometry_route(db, rail_route_id)
     db.commit()
     return _facility_response(db, facility_id)
 
@@ -829,6 +913,7 @@ def update_rail_facility(
         {**data, "facility_id": facility_id},
     )
     _sync_facility_baseline_points(db, facility_id)
+    _rebuild_computed_geometry_route(db, int(existing["rail_route_id"]))
     db.commit()
     return _facility_response(db, facility_id)
 
@@ -839,9 +924,11 @@ def delete_rail_facility(
     db: Session = Depends(get_db),
     _: User = Depends(require_org_admin),
 ):
-    _facility_response(db, facility_id)
+    existing = _facility_response(db, facility_id)
+    rail_route_id = int(existing["rail_route_id"])
     db.execute(text("DELETE FROM rail_baseline_points WHERE rail_facility_id = :facility_id"), {"facility_id": facility_id})
     db.execute(text("DELETE FROM rail_facilities WHERE id = :facility_id"), {"facility_id": facility_id})
+    _rebuild_computed_geometry_route(db, rail_route_id)
     db.commit()
 
 

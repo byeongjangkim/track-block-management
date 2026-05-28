@@ -4,6 +4,7 @@ import * as d3 from 'd3';
 import {
   fetchAllRailRouteGeometry,
   fetchAllRailStations,
+  fetchAllRailFacilities,
   fetchOrgBoundaries,
   fetchOrgViewport,
   fetchSigungu,
@@ -279,9 +280,19 @@ export default function RailwayMap({
     staleTime: Infinity,
   });
 
+  const { data: railFacilitiesData } = useQuery<FacilityCollection>({
+    queryKey: ['map-all-rail-facilities'],
+    queryFn: fetchAllRailFacilities,
+    enabled: facilityFilter != null,
+    staleTime: 0,
+  });
+
   // GPS 중복 마커 병합
   const mergedFacilityFeatures = useMemo(() => {
-    const all = [...(railStations?.features ?? [])];
+    const all = [
+      ...(railStations?.features ?? []),
+      ...(railFacilitiesData?.features ?? []),
+    ];
     const points = all.filter((f) => f.geometry.type === 'Point');
     const segs   = all.filter((f) => f.geometry.type !== 'Point');
 
@@ -304,7 +315,7 @@ export default function RailwayMap({
     }
 
     return [...segs, ...deduped];
-  }, [railStations]);
+  }, [railStations, railFacilitiesData]);
 
   // ── D3 초기화 ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -685,7 +696,7 @@ export default function RailwayMap({
 
     // ① 구간 시설물 (LineString)
     const segFeatures = mergedFacilityFeatures.filter((f) => f.geometry.type === 'LineString');
-    segLayer
+    const segPaths = segLayer
       .selectAll<SVGPathElement, FacilityFeature>('path.facility-segment')
       .data(segFeatures)
       .join('path')
@@ -698,6 +709,20 @@ export default function RailwayMap({
       .attr('opacity', 0.8)
       .attr('stroke-linecap', 'round')
       .attr('display', 'none')
+      .style('cursor', 'pointer')
+      .on('click', function(event: MouseEvent, d: FacilityFeature) {
+        event.stopPropagation();
+        const svgEl = svgRef.current;
+        if (!svgEl) return;
+        const rect = svgEl.getBoundingClientRect();
+        const px = event.clientX - rect.left;
+        const py = event.clientY - rect.top;
+        const label = d.properties.station_type ?? d.properties.type;
+        const kmEnd = d.properties.km_end != null ? `~${d.properties.km_end}km` : '';
+        const info = `${d.properties.route_name}  ${d.properties.km}km${kmEnd}`;
+        setPopupRef.current({ x: px, y: py, name: d.properties.name, type: label, info });
+      });
+    segPaths
       .append('title')
       .text((d) => `[${d.properties.station_type ?? d.properties.type}] ${d.properties.name}\n${d.properties.km}~${d.properties.km_end}km`);
 

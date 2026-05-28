@@ -1,13 +1,14 @@
 """
 map.py — 노선도 geometry API
 
-  GET /map/rail-routes/all/geometry       ← rail_computed_geometry 전체 노선 (line_type 포함)
-  GET /map/rail-routes/all/stations       ← KP 기반 역 위치 (rail_baseline_points station_center)
-  GET /map/organizations/{id}/boundaries  ← 조직 관할 구간 경계 (KP 기반)
-  GET /map/organizations/{id}/viewport    ← 조직 초기 뷰 설정
-  GET /map/rail-route-region-boundaries   ← 노선별 구역 경계 GeoJSON
-  GET /map/block-orders/segments          ← 차단명령 구간 GeoJSON (날짜 필터)
-  GET /map/sigungu?level=1|2              ← 시도/시군구 경계 GeoJSON (정적 파일, 대한민국 지도)
+  GET /map/rail-routes/all/geometry        ← rail_computed_geometry 전체 노선 (line_type 포함)
+  GET /map/rail-routes/all/stations        ← KP 기반 역 위치 (rail_baseline_points station_center)
+  GET /map/rail-routes/all/facility-items  ← rail_facilities 시설물 GeoJSON (is_active=1)
+  GET /map/organizations/{id}/boundaries   ← 조직 관할 구간 경계 (KP 기반)
+  GET /map/organizations/{id}/viewport     ← 조직 초기 뷰 설정
+  GET /map/rail-route-region-boundaries    ← 노선별 구역 경계 GeoJSON
+  GET /map/block-orders/segments           ← 차단명령 구간 GeoJSON (날짜 필터)
+  GET /map/sigungu?level=1|2               ← 시도/시군구 경계 GeoJSON (정적 파일, 대한민국 지도)
 """
 
 import json
@@ -176,6 +177,77 @@ def get_all_rail_stations(
                 "type":        "Point",
                 "coordinates": [r.lon, r.lat],
             },
+        })
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+# ── rail_facilities 시설물 GeoJSON ────────────────────────────────────────
+
+@router.get("/rail-routes/all/facility-items")
+def get_all_rail_facility_items(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = db.execute(
+        text("""
+            SELECT rf.id,
+                   rr.korail_route_code,
+                   rr.name AS route_name,
+                   rf.kp_start, rf.kp_end,
+                   rf.lat, rf.lon,
+                   rf.lat_end, rf.lon_end,
+                   rf.name AS facility_name,
+                   rf.direction, rf.note,
+                   c.major_category, c.sub_category, c.detail_category, c.geometry_type
+            FROM rail_facilities rf
+            JOIN rail_routes rr ON rr.id = rf.rail_route_id
+            JOIN rail_facility_classifications c ON c.id = rf.classification_id
+            WHERE rf.is_active = 1 AND rf.kp_start IS NOT NULL
+            ORDER BY rr.korail_route_code, rf.kp_start
+        """)
+    ).fetchall()
+
+    features = []
+    for r in rows:
+        if r.major_category == '구조물':
+            ftype = '구조물'
+            station_type = r.sub_category
+        else:
+            ftype = '변전소'
+            station_type = (r.detail_category or r.sub_category or '').lower() or None
+
+        if (r.geometry_type == 'linear'
+                and r.lat is not None and r.lon is not None
+                and r.lat_end is not None and r.lon_end is not None):
+            geometry = {
+                "type": "LineString",
+                "coordinates": [[r.lon, r.lat], [r.lon_end, r.lat_end]],
+            }
+        elif r.lat is not None and r.lon is not None:
+            geometry = {
+                "type": "Point",
+                "coordinates": [r.lon, r.lat],
+            }
+        else:
+            continue
+
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "id":            r.id,
+                "type":          ftype,
+                "station_type":  station_type,
+                "name":          r.facility_name,
+                "km":            r.kp_start,
+                "km_end":        r.kp_end,
+                "direction":     r.direction,
+                "has_station_map": False,
+                "note":          r.note,
+                "route_code":    r.korail_route_code,
+                "route_name":    r.route_name,
+            },
+            "geometry": geometry,
         })
 
     return {"type": "FeatureCollection", "features": features}
