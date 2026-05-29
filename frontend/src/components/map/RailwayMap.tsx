@@ -36,6 +36,8 @@ interface Props {
   blockSegments?: BlockSegmentCollection | null;
   /** 선택된 차단명령 ID (강조 표시) */
   selectedBlockId?: number | null;
+  /** 차단구간 클릭 시 호출 — id 전달 */
+  onBlockSegmentClick?: (id: number) => void;
 }
 
 // ── 색상 정의 ──────────────────────────────────────────────────────────────
@@ -106,10 +108,48 @@ const BLOCK_DIR_COLORS: Record<string, string> = {
 
 const BLOCK_OFFSET_SVG = 4;
 
+const DANGER_MARKER_COLORS: Record<string, string> = {
+  A: '#ef4444',
+  B: '#f59e0b',
+  C: '#10b981',
+};
+const DANGER_MARKER_DEFAULT = '#6b7280';
+
+function segmentMidpoint(
+  coords: [number, number][],
+  projection: d3.GeoProjection,
+): [number, number] | null {
+  const pts = coords
+    .map(([lon, lat]) => projection([lon, lat]))
+    .filter((p): p is [number, number] => p !== null);
+  if (pts.length === 0) return null;
+  if (pts.length === 1) return pts[0];
+  let total = 0;
+  const dists: number[] = [0];
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0] - pts[i - 1][0];
+    const dy = pts[i][1] - pts[i - 1][1];
+    total += Math.sqrt(dx * dx + dy * dy);
+    dists.push(total);
+  }
+  const half = total / 2;
+  for (let i = 1; i < pts.length; i++) {
+    if (dists[i] >= half) {
+      const t = (half - dists[i - 1]) / (dists[i] - dists[i - 1]);
+      return [
+        pts[i - 1][0] + t * (pts[i][0] - pts[i - 1][0]),
+        pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]),
+      ];
+    }
+  }
+  return pts[pts.length - 1];
+}
+
 function buildOffsetPath(
   coords: [number, number][],
   direction: 'UP' | 'DOWN',
   projection: d3.GeoProjection,
+  zoomK: number,
 ): string {
   const pts = coords
     .map(([lon, lat]) => projection([lon, lat]))
@@ -118,6 +158,8 @@ function buildOffsetPath(
   if (pts.length < 2) return '';
 
   const sign = direction === 'UP' ? 1 : -1;
+  // 줌 스케일 k로 나눠 물리 픽셀 오프셋을 BLOCK_OFFSET_SVG px로 일정하게 유지
+  const offsetSvg = BLOCK_OFFSET_SVG / zoomK;
 
   const offsetPts: [number, number][] = pts.map((p, i) => {
     let dx: number, dy: number;
@@ -135,7 +177,7 @@ function buildOffsetPath(
     if (len < 1e-6) return p;
     const nx = -dy / len;
     const ny =  dx / len;
-    return [p[0] + sign * BLOCK_OFFSET_SVG * nx, p[1] + sign * BLOCK_OFFSET_SVG * ny];
+    return [p[0] + sign * offsetSvg * nx, p[1] + sign * offsetSvg * ny];
   });
 
   return d3.line()(offsetPts) ?? '';
@@ -226,6 +268,7 @@ export default function RailwayMap({
   showDangerZone = false,
   blockSegments = null,
   selectedBlockId = null,
+  onBlockSegmentClick,
 }: Props) {
   const svgRef            = useRef<SVGSVGElement>(null);
   const gRef              = useRef<SVGGElement>(null);
@@ -235,8 +278,10 @@ export default function RailwayMap({
   const zoomDisplayRef    = useRef<HTMLSpanElement>(null);
   const sigunguDataRef    = useRef<SigungCollection | null>(null);
   // stale-closure 방지 refs — zoom handler에서 최신 상태에 접근
-  const facilityFilterRef  = useRef<FacilityFilter | null>(null);
-  const filterRouteCodeRef = useRef<string | null>(null);
+  const facilityFilterRef   = useRef<FacilityFilter | null>(null);
+  const filterRouteCodeRef  = useRef<string | null>(null);
+  // 줌 변경 시 block-segment 오프셋 재계산에 사용
+  const blockSegmentsRef    = useRef<typeof blockSegments>(null);
   const [facilityPopup, setFacilityPopup] = useState<FacilityPopup | null>(null);
   const setPopupRef = useRef(setFacilityPopup);
 
@@ -346,6 +391,8 @@ export default function RailwayMap({
     g.append('g').attr('class', 'org-boundaries');
     g.append('g').attr('class', 'danger-zones');      // 위험/보호구간 (block-segments 아래)
     g.append('g').attr('class', 'block-segments');
+    g.append('g').attr('class', 'block-route-badges'); // 줌<1.5: 노선별 집계 배지
+    g.append('g').attr('class', 'block-markers');      // 줌≥1.5: 구간 중심점 마커
     g.append('g').attr('class', 'facility-segments');
     g.append('g').attr('class', 'facility-points');
 
@@ -362,10 +409,39 @@ export default function RailwayMap({
 
     const zoom = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.5, 30])
+      // 이동 범위 제한: 지도가 컨테이너 외부로 완전히 벗어나지 않도록
+      .translateExtent([[-W * 2, -H * 2], [W * 3, H * 3]])
       .on('zoom', ({ transform }) => {
         g.attr('transform', transform.toString());
         scaleRef.current = transform.k;
         _updateFacilityVisibility(transform.k);
+
+        // 줌 변경 시 block-segment 오프셋 즉시 재계산
+        const proj = projRef.current;
+        const k = transform.k;
+        if (proj && blockSegmentsRef.current?.features.length) {
+          g.selectAll<SVGPathElement, BlockSegmentFeature>('path.block-segment, path.block-segment-hit, path.protect-zone, path.danger-zone')
+            .attr('d', (d) =>
+              buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj, k)
+            );
+        }
+        // 마커·집계 배지 스케일 갱신 (1/k로 화면 크기 일정 유지)
+        g.selectAll<SVGGElement, unknown>('g.block-marker')
+          .attr('transform', function() {
+            const el = this as SVGGElement;
+            return `translate(${el.getAttribute('data-mx')},${el.getAttribute('data-my')}) scale(${1 / k})`;
+          });
+        g.selectAll<SVGGElement, unknown>('g.block-badge')
+          .attr('transform', function() {
+            const el = this as SVGGElement;
+            return `translate(${el.getAttribute('data-bx')},${el.getAttribute('data-by')}) scale(${1 / k})`;
+          });
+        // 줌 레벨에 따른 레이어 전환
+        // 전국(< 1.5): 집계 배지만 표시, 선·마커 숨김
+        // 지역(≥ 1.5): 선·마커 표시, 집계 배지 숨김
+        g.select<SVGGElement>('.block-segments').attr('display', k >= 1.5 ? null : 'none');
+        g.select<SVGGElement>('.block-markers').attr('display', k >= 1.5 ? null : 'none');
+        g.select<SVGGElement>('.block-route-badges').attr('display', k < 1.5 ? null : 'none');
 
         if (zoomDisplayRef.current) {
           zoomDisplayRef.current.textContent = `×${transform.k.toFixed(1)}`;
@@ -374,6 +450,10 @@ export default function RailwayMap({
 
     zoomRef.current = zoom;
     svg.call(zoom);
+
+    // wheel 이벤트가 브라우저 페이지 줌/스크롤로 전파되지 않도록 차단
+    svgRef.current.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+
     svg.on('click', () => setPopupRef.current(null));
 
     svg.call(
@@ -598,6 +678,7 @@ export default function RailwayMap({
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
     const proj = projRef.current;
+    const k = scaleRef.current;
     const g = d3.select(gRef.current);
     const layer = g.select<SVGGElement>('.danger-zones');
     layer.selectAll('*').remove();
@@ -610,7 +691,7 @@ export default function RailwayMap({
       .join('path')
       .attr('class', 'protect-zone')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj, k)
       )
       .attr('fill', 'none')
       .attr('stroke', (d) => BLOCK_DIR_COLORS[d.properties.direction] ?? '#ef4444')
@@ -627,7 +708,7 @@ export default function RailwayMap({
       .join('path')
       .attr('class', 'danger-zone')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj, k)
       )
       .attr('fill', 'none')
       .attr('stroke', (d) => BLOCK_DIR_COLORS[d.properties.direction] ?? '#ef4444')
@@ -642,11 +723,35 @@ export default function RailwayMap({
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
     const proj = projRef.current;
+    const k = scaleRef.current;
     const g = d3.select(gRef.current);
-    const layer = g.select<SVGGElement>('.block-segments');
+    const layer       = g.select<SVGGElement>('.block-segments');
+    const markerLayer = g.select<SVGGElement>('.block-markers');
+    const badgeLayer  = g.select<SVGGElement>('.block-route-badges');
     layer.selectAll('*').remove();
+    markerLayer.selectAll('*').remove();
+    badgeLayer.selectAll('*').remove();
+    blockSegmentsRef.current = blockSegments;
     if (!blockSegments || blockSegments.features.length === 0) return;
 
+    // ① 투명 히트 영역 — 얇은 선의 클릭 영역을 20px로 확장
+    layer
+      .selectAll<SVGPathElement, BlockSegmentFeature>('path.block-segment-hit')
+      .data(blockSegments.features)
+      .join('path')
+      .attr('class', 'block-segment-hit')
+      .attr('d', (d) => buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.direction, proj, k))
+      .attr('fill', 'none')
+      .attr('stroke', 'transparent')
+      .attr('stroke-width', 20)
+      .attr('vector-effect', 'non-scaling-stroke')
+      .style('cursor', 'pointer')
+      .on('click', function(event: MouseEvent, d: BlockSegmentFeature) {
+        event.stopPropagation();
+        onBlockSegmentClick?.(d.properties.id);
+      });
+
+    // ② 차단구간 색상 선
     layer
       .selectAll<SVGPathElement, BlockSegmentFeature>('path.block-segment')
       .data(blockSegments.features)
@@ -657,6 +762,7 @@ export default function RailwayMap({
           d.geometry.coordinates as [number, number][],
           d.properties.direction,
           proj,
+          k,
         )
       )
       .attr('fill', 'none')
@@ -669,6 +775,10 @@ export default function RailwayMap({
       .attr('opacity', (d) => d.properties.id === selectedBlockId ? 1.0 : 0.75)
       .attr('stroke-linecap', 'round')
       .style('cursor', 'pointer')
+      .on('click', function(event: MouseEvent, d: BlockSegmentFeature) {
+        event.stopPropagation();
+        onBlockSegmentClick?.(d.properties.id);
+      })
       .append('title')
       .text((d) => {
         const p = d.properties;
@@ -678,7 +788,112 @@ export default function RailwayMap({
         const dir = p.direction === 'UP' ? '상선(좌)' : '하선(우)';
         return `${p.route_name} ${loc} [${dir}]\n${p.work_date} ${p.start_time}~${p.end_time}\n${p.field} / ${p.block_type}`;
       });
-  }, [blockSegments, selectedBlockId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // ③ 구간 중심점 마커 ◆ (zoom ≥ 1.5 — 지역본부 단위 이상에서 표시)
+    const markers = markerLayer
+      .selectAll<SVGGElement, BlockSegmentFeature>('g.block-marker')
+      .data(blockSegments.features)
+      .join('g')
+      .attr('class', 'block-marker')
+      .style('cursor', 'pointer')
+      .on('click', function(event: MouseEvent, d: BlockSegmentFeature) {
+        event.stopPropagation();
+        onBlockSegmentClick?.(d.properties.id);
+      });
+
+    markers.each(function(d) {
+      const mid = segmentMidpoint(d.geometry.coordinates as [number, number][], proj);
+      if (!mid) return;
+      const el = d3.select(this);
+      el.attr('data-mx', mid[0]).attr('data-my', mid[1])
+        .attr('transform', `translate(${mid[0]},${mid[1]}) scale(${1 / k})`);
+      const isSelected = d.properties.id === selectedBlockId;
+      const color = DANGER_MARKER_COLORS[d.properties.danger_level ?? ''] ?? DANGER_MARKER_DEFAULT;
+      const s = isSelected ? 7 : 5;
+      el.append('circle').attr('r', s + 5).attr('fill', 'transparent'); // 클릭 히트 확장
+      if (isSelected) {
+        el.append('polygon')
+          .attr('points', `0,${-(s + 4)} ${s + 4},0 0,${s + 4} ${-(s + 4)},0`)
+          .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2.5)
+          .attr('opacity', 0.55).attr('vector-effect', 'non-scaling-stroke');
+      }
+      el.append('polygon')
+        .attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`)
+        .attr('fill', color).attr('stroke', 'white')
+        .attr('stroke-width', isSelected ? 2.5 : 1.5)
+        .attr('vector-effect', 'non-scaling-stroke');
+      el.append('title').text(() => {
+        const p = d.properties;
+        const loc = p.section_type === 'power_cut' ? (p.section_note ?? p.display_km) : `${p.display_km}km`;
+        const dir = p.direction === 'UP' ? '상선' : p.direction === 'DOWN' ? '하선' : '전체';
+        const danger = p.danger_level ? `[${p.danger_level}등급] ` : '';
+        return `${danger}${p.route_name}  ${loc} (${dir})\n${p.start_time}~${p.end_time}  ${p.field} / ${p.block_type}`;
+      });
+    });
+
+    layer.attr('display', k >= 1.5 ? null : 'none');
+    markerLayer.attr('display', k >= 1.5 ? null : 'none');
+
+    // ④ 노선별 집계 배지 (zoom < 1.5 — 전국 조망 시 노선 단위로 건수 표시)
+    type BadgeData = { routeName: string; count: number; worstLevel: string | null; cx: number; cy: number };
+    const DANGER_PRIORITY: Record<string, number> = { A: 3, B: 2, C: 1 };
+
+    const routeGroups = new Map<string, { features: BlockSegmentFeature[]; midpoints: [number, number][] }>();
+    for (const feat of blockSegments.features) {
+      const rn = feat.properties.route_name;
+      if (!routeGroups.has(rn)) routeGroups.set(rn, { features: [], midpoints: [] });
+      const grp = routeGroups.get(rn)!;
+      grp.features.push(feat);
+      const mid = segmentMidpoint(feat.geometry.coordinates as [number, number][], proj);
+      if (mid) grp.midpoints.push(mid);
+    }
+
+    const badgeData: BadgeData[] = [];
+    for (const [routeName, { features, midpoints }] of routeGroups) {
+      if (midpoints.length === 0) continue;
+      const cx = midpoints.reduce((s, p) => s + p[0], 0) / midpoints.length;
+      const cy = midpoints.reduce((s, p) => s + p[1], 0) / midpoints.length;
+      let worstLevel: string | null = null;
+      let worstPriority = 0;
+      for (const f of features) {
+        const pri = DANGER_PRIORITY[f.properties.danger_level ?? ''] ?? 0;
+        if (pri > worstPriority) { worstPriority = pri; worstLevel = f.properties.danger_level; }
+      }
+      // 동일 차단명령(id)이 상·하선 등 복수 feature로 분리될 수 있으므로 고유 ID 기준 카운트
+      const count = new Set(features.map((f) => f.properties.id)).size;
+      badgeData.push({ routeName, count, worstLevel, cx, cy });
+    }
+
+    const badges = badgeLayer
+      .selectAll<SVGGElement, BadgeData>('g.block-badge')
+      .data(badgeData)
+      .join('g')
+      .attr('class', 'block-badge');
+
+    badges.each(function(d) {
+      const el = d3.select(this);
+      el.attr('data-bx', d.cx).attr('data-by', d.cy)
+        .attr('transform', `translate(${d.cx},${d.cy}) scale(${1 / k})`);
+      const color = DANGER_MARKER_COLORS[d.worstLevel ?? ''] ?? DANGER_MARKER_DEFAULT;
+      const r = 9 + Math.min(d.count - 1, 4) * 1.5;
+      el.append('circle').attr('r', r).attr('fill', color)
+        .attr('stroke', 'white').attr('stroke-width', 2)
+        .attr('vector-effect', 'non-scaling-stroke').attr('opacity', 0.92);
+      el.append('text')
+        .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+        .attr('font-size', '10px').attr('font-weight', 'bold').attr('fill', 'white')
+        .style('pointer-events', 'none').text(d.count);
+      const shortName = d.routeName.length > 5 ? d.routeName.slice(0, 5) + '…' : d.routeName;
+      el.append('text')
+        .attr('text-anchor', 'middle').attr('y', r + 8)
+        .attr('font-size', '8px').attr('fill', '#334155').attr('font-weight', '500')
+        .style('pointer-events', 'none').text(shortName);
+    });
+
+    badgeLayer.attr('display', k < 1.5 ? null : 'none');
+
+  // allRailGeo가 바뀌면(D3 init 재실행 시) 레이어가 재생성되므로 block-segments도 재렌더
+  }, [blockSegments, selectedBlockId, allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 시설물 레이어 ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -859,7 +1074,11 @@ export default function RailwayMap({
   // ── 렌더 ─────────────────────────────────────────────────────────────────
   return (
     <div className="relative w-full h-full bg-[#e8edf2]">
-      <svg ref={svgRef} className="w-full h-full">
+      <svg
+        ref={svgRef}
+        className="w-full h-full"
+        style={{ overflow: 'hidden', touchAction: 'none', userSelect: 'none' }}
+      >
         <g ref={gRef} />
       </svg>
 
@@ -909,6 +1128,21 @@ export default function RailwayMap({
               <div className="flex items-center gap-2">
                 <span className="inline-block w-6 h-1.5 rounded" style={{ backgroundColor: BLOCK_DIR_COLORS.DOWN }} />
                 <span className="text-gray-600">하선 (DOWN)</span>
+              </div>
+              <div className="border-t pt-1 mt-0.5 font-medium text-gray-600">◆ 위험등급</div>
+              {(['A','B','C'] as const).map((lvl) => (
+                <div key={lvl} className="flex items-center gap-1.5">
+                  <svg width="10" height="10" viewBox="-5 -5 10 10">
+                    <polygon points="0,-4 4,0 0,4 -4,0" fill={DANGER_MARKER_COLORS[lvl]} stroke="white" strokeWidth="1" />
+                  </svg>
+                  <span className="text-gray-600">{lvl === 'A' ? 'A 위험' : lvl === 'B' ? 'B 주의' : 'C 일반'}</span>
+                </div>
+              ))}
+              <div className="flex items-center gap-1.5">
+                <svg width="10" height="10" viewBox="-5 -5 10 10">
+                  <polygon points="0,-4 4,0 0,4 -4,0" fill={DANGER_MARKER_DEFAULT} stroke="white" strokeWidth="1" />
+                </svg>
+                <span className="text-gray-600">미지정</span>
               </div>
               {showDangerZone && (
                 <>

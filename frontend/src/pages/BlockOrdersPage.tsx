@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchBlockOrders, deleteBlockOrder, uploadDocument } from '../api/blockOrders';
@@ -46,6 +46,9 @@ export default function BlockOrdersPage() {
   const [appliedDateFrom, setAppliedDateFrom]   = useState(DEFAULT_DATE_FROM);
   const [appliedDateTo, setAppliedDateTo]       = useState(DEFAULT_DATE_TO);
 
+  // 위험등급 필터 (null=전체, 'A'/'B'/'C'/'none'=미지정)
+  const [filterDangerLevel, setFilterDangerLevel] = useState<string | null>(null);
+
   // 모달 상태
   const [showForm, setShowForm]         = useState(false);
   const [editing, setEditing]           = useState<BlockOrder | undefined>();
@@ -79,6 +82,12 @@ export default function BlockOrdersPage() {
   const routeMap = Object.fromEntries(routes.map((r) => [r.id, r.name]));
   const orgMap   = Object.fromEntries(organizations.map((o) => [o.id, o.name]));
 
+  const filteredOrders = useMemo(() => {
+    if (filterDangerLevel === null) return orders;
+    if (filterDangerLevel === 'none') return orders.filter((o) => o.danger_level === null);
+    return orders.filter((o) => o.danger_level === filterDangerLevel);
+  }, [orders, filterDangerLevel]);
+
   function canEdit(order: BlockOrder) {
     if (isSuperuser) return true;
     if (user?.role === 'org_admin' && order.organization_id === user.organization_id) return true;
@@ -110,13 +119,14 @@ export default function BlockOrdersPage() {
     setAppliedField('');
     setAppliedDateFrom(DEFAULT_DATE_FROM);
     setAppliedDateTo(DEFAULT_DATE_TO);
+    setFilterDangerLevel(null);
   }
 
   function openCreate() { setEditing(undefined); setShowForm(true); }
   function openEdit(o: BlockOrder) { setEditing(o); setShowForm(true); }
   function closeForm() { setShowForm(false); setEditing(undefined); }
 
-  const colCount = isSuperuser ? 13 : 12;
+  const colCount = isSuperuser ? 14 : 13;
 
   const SELECT_CLS = 'h-9 w-32 border rounded-lg pl-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white appearance-none cursor-pointer';
   const DATE_CLS   = 'h-9 border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white';
@@ -194,6 +204,30 @@ export default function BlockOrdersPage() {
           className={DATE_CLS}
         />
 
+        {/* 위험등급 필터 */}
+        <span className={LABEL_CLS}>위험등급</span>
+        <div className="flex items-center gap-1">
+          {([
+            [null,   '전체',  'bg-blue-600'],
+            ['A',    'A',     'bg-red-500'],
+            ['B',    'B',     'bg-yellow-500'],
+            ['C',    'C',     'bg-green-500'],
+            ['none', '미지정','bg-gray-400'],
+          ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
+            <button
+              key={String(v)}
+              onClick={() => setFilterDangerLevel(v)}
+              className={`h-7 px-2.5 text-xs rounded border transition-colors ${
+                filterDangerLevel === v
+                  ? `${activeCls} text-white border-transparent`
+                  : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* 버튼 그룹 */}
         <div className="flex items-center gap-2 ml-auto">
           <button
@@ -238,7 +272,11 @@ export default function BlockOrdersPage() {
       {/* 건수 + 소속 조직 배지 */}
       <div className="flex items-center gap-3 mb-2 shrink-0">
         <p className="text-sm text-gray-500">
-          {isLoading ? '조회 중...' : `총 ${orders.length}건`}
+          {isLoading ? '조회 중...' : (
+            filterDangerLevel !== null
+              ? `${filteredOrders.length}/${orders.length}건`
+              : `총 ${orders.length}건`
+          )}
         </p>
         {user?.organization_name && (
           <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">
@@ -256,7 +294,7 @@ export default function BlockOrdersPage() {
               {[
                 ...(isSuperuser ? ['소속 조직'] : []),
                 '노선', '방향', '구간 (km)', '작업일자', '시간', '분야',
-                '차단종류', '작업책임자', '안전관리자', '외부', '문서', '작업',
+                '차단종류', '위험등급', '작업책임자', '안전관리자', '외부', '문서', '작업',
               ].map((h) => (
                 <th
                   key={h}
@@ -268,14 +306,14 @@ export default function BlockOrdersPage() {
             </tr>
           </thead>
           <tbody>
-            {orders.length === 0 ? (
+            {filteredOrders.length === 0 ? (
               <tr>
                 <td colSpan={colCount} className="text-center py-12 text-gray-400">
-                  {isLoading ? '불러오는 중...' : '차단명령이 없습니다.'}
+                  {isLoading ? '불러오는 중...' : orders.length === 0 ? '차단명령이 없습니다.' : '해당 등급의 차단명령이 없습니다.'}
                 </td>
               </tr>
             ) : (
-              orders.map((o) => (
+              filteredOrders.map((o) => (
                 <tr
                   key={o.id}
                   className="border-b hover:bg-blue-50 transition-colors cursor-pointer"
@@ -309,6 +347,20 @@ export default function BlockOrdersPage() {
                     <FieldBadge field={o.field} />
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">{o.block_type}</td>
+                  <td className="px-3 py-2 text-center">
+                    {o.danger_level ? (
+                      <span
+                        className="px-1.5 py-0.5 rounded text-white text-xs font-medium"
+                        style={{
+                          backgroundColor: o.danger_level === 'A' ? '#ef4444'
+                            : o.danger_level === 'B' ? '#f59e0b'
+                            : '#10b981',
+                        }}
+                      >
+                        {o.danger_level}
+                      </span>
+                    ) : <span className="text-gray-300 text-xs">—</span>}
+                  </td>
                   <td className="px-3 py-2 whitespace-nowrap">{o.work_supervisor}</td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">{o.safety_manager}</td>
                   <td className="px-3 py-2 text-center">

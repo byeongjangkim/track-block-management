@@ -3,8 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createBlockOrder, updateBlockOrder, parsePdfForBlockOrder } from '../../api/blockOrders';
 import { fetchRoutes } from '../../api/routes';
 import { fetchOrganizations } from '../../api/organizations';
-import { fetchFacilities } from '../../api/facilities';
-import { fetchDepotRoutes } from '../../api/map';
+import { fetchDepotRoutes, fetchRailSubstations } from '../../api/map';
 import { useAuthStore } from '../../store/authStore';
 import type { BlockOrder, BlockOrderCreate } from '../../types';
 import type { AxiosError } from 'axios';
@@ -35,6 +34,9 @@ const EMPTY: BlockOrderCreate = {
   section_note: '',
   start_facility_id: null,
   end_facility_id: null,
+  start_rail_facility_id: null,
+  end_rail_facility_id: null,
+  danger_level: null,
   work_date: today(),
   start_time: '09:00',
   end_time: '17:00',
@@ -87,6 +89,9 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
           section_note: initial.section_note ?? '',
           start_facility_id: initial.start_facility_id ?? null,
           end_facility_id: initial.end_facility_id ?? null,
+          start_rail_facility_id: initial.start_rail_facility_id ?? null,
+          end_rail_facility_id: initial.end_rail_facility_id ?? null,
+          danger_level: initial.danger_level ?? null,
           work_date: initial.work_date,
           start_time: initial.start_time.slice(0, 5),
           end_time: initial.end_time.slice(0, 5),
@@ -140,11 +145,16 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
 
   const [error, setError] = useState('');
 
-  // 전차선 단전 시 변전소 목록 (선택된 노선의 SUBSTATION 시설물)
+  // 전차선 단전 시 변전소 목록 — rail_facilities 변전설비 (SS/SP/SSP/PP/ATP 등)
+  const substationsRouteId = isDepot ? undefined : (form.route_id || undefined);
+  const substationsRailRouteId = isDepot ? (form.rail_route_id || undefined) : undefined;
   const { data: substations = [] } = useQuery({
-    queryKey: ['facilities-substation', form.route_id],
-    queryFn: () => fetchFacilities({ route_id: form.route_id ?? 0, type: 'SUBSTATION' }),
-    enabled: (form.route_id ?? 0) > 0,
+    queryKey: ['rail-substations', substationsRouteId, substationsRailRouteId],
+    queryFn: () => fetchRailSubstations({
+      route_id: substationsRouteId,
+      rail_route_id: substationsRailRouteId,
+    }),
+    enabled: form.block_type === POWER_CUT_TYPE && (!!substationsRouteId || !!substationsRailRouteId),
     staleTime: 60_000,
   });
 
@@ -236,8 +246,8 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
       if (form.route_id === 0) { setError('노선을 선택하세요.'); return; }
     }
     if (isPowerCut) {
-      if (!form.start_facility_id) { setError('시작 변전소를 선택하세요.'); return; }
-      if (!form.end_facility_id)   { setError('종료 변전소를 선택하세요.'); return; }
+      if (!form.start_rail_facility_id) { setError('시작 변전소를 선택하세요.'); return; }
+      if (!form.end_rail_facility_id)   { setError('종료 변전소를 선택하세요.'); return; }
     } else if (!isDepot) {
       if ((form.start_km ?? 0) >= (form.end_km ?? 0)) {
         setError('종료 거리정은 시작 거리정보다 커야 합니다.'); return;
@@ -254,8 +264,10 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
       track_name:    isDepot ? (form.track_name?.trim() || null) : null,
       start_km:      isPowerCut || isDepot ? null : form.start_km,
       end_km:        isPowerCut || isDepot ? null : form.end_km,
-      start_facility_id: isPowerCut ? form.start_facility_id : null,
-      end_facility_id:   isPowerCut ? form.end_facility_id   : null,
+      start_facility_id:      null,  // 레거시 — 신규 등록 시 미사용
+      end_facility_id:        null,
+      start_rail_facility_id: isPowerCut ? form.start_rail_facility_id : null,
+      end_rail_facility_id:   isPowerCut ? form.end_rail_facility_id   : null,
       section_note: form.section_note?.trim() || undefined,
       doc_no: form.doc_no?.trim() || undefined,
       dept_head: form.dept_head?.trim() || undefined,
@@ -415,6 +427,9 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
                   <>
                     <option value="DOWN">하선 (DOWN)</option>
                     <option value="UP">상선 (UP)</option>
+                    {form.block_type === POWER_CUT_TYPE && (
+                      <option value="BOTH">상하선 (BOTH)</option>
+                    )}
                   </>
                 )}
               </select>
@@ -440,31 +455,53 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
               <div className="grid grid-cols-2 gap-4">
                 <Field label="시작 변전소 (SP/SS/SSP) *">
                   <select
-                    value={form.start_facility_id ?? ''}
-                    onChange={(e) => set('start_facility_id', e.target.value ? Number(e.target.value) : null)}
+                    value={form.start_rail_facility_id ?? ''}
+                    onChange={(e) => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      const sub = substations.find((s) => s.id === id);
+                      const endSub = substations.find((s) => s.id === form.end_rail_facility_id);
+                      setForm((f) => ({
+                        ...f,
+                        start_rail_facility_id: id,
+                        section_note: sub && endSub ? `${sub.name}~${endSub.name}` : f.section_note,
+                      }));
+                    }}
                     className={SELECT}
                   >
                     <option value="">변전소 선택</option>
-                    {substations.map((f) => (
-                      <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
+                    {substations.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}{s.detail_category ? ` (${s.detail_category})` : ''} — {s.kp}km
+                      </option>
                     ))}
                   </select>
                 </Field>
                 <Field label="종료 변전소 (SP/SS/SSP) *">
                   <select
-                    value={form.end_facility_id ?? ''}
-                    onChange={(e) => set('end_facility_id', e.target.value ? Number(e.target.value) : null)}
+                    value={form.end_rail_facility_id ?? ''}
+                    onChange={(e) => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      const startSub = substations.find((s) => s.id === form.start_rail_facility_id);
+                      const sub = substations.find((s) => s.id === id);
+                      setForm((f) => ({
+                        ...f,
+                        end_rail_facility_id: id,
+                        section_note: startSub && sub ? `${startSub.name}~${sub.name}` : f.section_note,
+                      }));
+                    }}
                     className={SELECT}
                   >
                     <option value="">변전소 선택</option>
-                    {substations.map((f) => (
-                      <option key={f.id} value={f.id}>{f.name} ({f.km}km)</option>
+                    {substations.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}{s.detail_category ? ` (${s.detail_category})` : ''} — {s.kp}km
+                      </option>
                     ))}
                   </select>
                 </Field>
                 {substations.length === 0 && (
                   <p className="col-span-2 text-xs text-amber-600">
-                    이 노선에 등록된 변전소가 없습니다. 시설물 관리에서 SUBSTATION을 먼저 등록하세요.
+                    이 노선에 등록된 변전설비가 없습니다. 시설물 관리에서 변전설비를 먼저 등록하세요.
                   </p>
                 )}
               </div>
@@ -545,6 +582,31 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
               </select>
             </Field>
           </div>
+
+          {/* 위험등급 */}
+          <Field label="위험등급">
+            <div className="flex gap-2">
+              {([null, 'A', 'B', 'C'] as const).map((lv) => {
+                const labels: Record<string, string> = { A: 'A — 위험', B: 'B — 주의', C: 'C — 일반' };
+                const colors: Record<string, string> = { A: 'border-red-500 bg-red-50 text-red-700', B: 'border-amber-500 bg-amber-50 text-amber-700', C: 'border-green-500 bg-green-50 text-green-700' };
+                const selected = form.danger_level === lv;
+                return (
+                  <button
+                    key={String(lv)}
+                    type="button"
+                    onClick={() => set('danger_level', lv)}
+                    className={`flex-1 py-1.5 text-xs rounded border font-medium transition-colors ${
+                      selected
+                        ? (lv ? colors[lv] : 'border-gray-400 bg-gray-100 text-gray-700')
+                        : 'border-gray-200 text-gray-400 hover:border-gray-300'
+                    }`}
+                  >
+                    {lv ? labels[lv] : '미지정'}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
 
           {/* 체크박스 */}
           <div className="flex gap-6">

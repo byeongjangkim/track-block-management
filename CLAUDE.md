@@ -20,8 +20,8 @@ KORAIL 전국 선로차단작업 승인 내역 통합 관리 웹 앱.
 | 서버 | MacBook M2 14 (arm64, macOS 15, 사내망 LAN) |
 | Python | 3.12 |
 | Node.js | 22 |
-| 백엔드 포트 | **8000** |
-| 프론트엔드 포트 | **5173** |
+| 백엔드 포트 | **7000** |
+| 프론트엔드 포트 | **7001** |
 | DB | `backend/db.sqlite3` (SQLite, Phase 1) |
 
 ---
@@ -57,7 +57,7 @@ track-block-management/
 ```bash
 cd backend
 source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload
 ```
 
 최초 설치:
@@ -83,7 +83,7 @@ UPLOAD_DIR=./uploads
 pip install <패키지명>                           # 1. venv 설치
 # requirements.txt에 추가 (직접 편집)            # 2. 파일에 기재
 python3 -c "import app.main; print('import OK')"  # 3. import 확인
-curl -m 5 http://localhost:8000/api/health         # 4. 서버 응답 확인
+curl -m 5 http://localhost:7000/api/health         # 4. 서버 응답 확인
 ```
 
 > 누락 시 uvicorn이 import 오류로 멈춰 모든 API가 응답 불가 상태가 된다.
@@ -114,7 +114,7 @@ npm run dev -- --host 0.0.0.0   # LAN: http://[맥IP]:5173
 
 ```bash
 # .env.local (git 제외)
-VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
+VITE_API_URL=http://localhost:7000   # LAN 접속 시 맥 IP로 변경
 ```
 
 ### 주요 파일
@@ -146,6 +146,8 @@ VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
 | `org-boundaries` | `OrganizationRouteRange` | 분야별 |
 | `danger-zones` | `block-segments` 재사용 | 위험(8px/28%) / 보호(20px/12%) |
 | `block-segments` | `/map/block-orders/segments` | UP `#ef4444` / DOWN `#f97316` |
+| `block-route-badges` | `block-segments` 집계 | zoom < 1.5에서만 표시 — 노선별 건수 원형 배지 |
+| `block-markers` | `block-segments` 중심점 | zoom ≥ 1.5에서만 표시 — 위험등급 색상 ◆ 다이아몬드 |
 | `facility-points` (Point) | `rail_baseline_points` station_center + `rail_facilities` is_active=1 | 역종별, 전기설비·구조물 종류별 |
 | `facility-points` (LineString) | `rail_facilities` geometry_type='linear' | 터널 `#6b7280` / 교량 `#0891b2` / 과선교 `#dc2626` |
 
@@ -182,8 +184,22 @@ VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
 `segLayer` path에 `.on('click', ...)` 핸들러 등록 — 클릭 시 `setPopupRef`로 팝업 표시 (노선명 + KP 범위).  
 `cursor: pointer` 설정으로 클릭 가능 표시.
 
+**차단구간 클릭 인터랙션:**
+- `path.block-segment-hit` (투명 20px 히트 영역) + `path.block-segment` (색상 선) 구조
+- 클릭 시 → `onBlockSegmentClick(id)` prop → `BlockMapPage.handleSelect(id)` → 드래그 가능 상세 팝업
+- 팝업에서 위험등급 인라인 수정 (`PATCH /api/v1/block-orders/{id}`) → React Query invalidate
+
+**차단구간 줌 기반 표시 전환:**
+- zoom < 1.5 (전국): 선분 숨김 + `block-route-badges` 표시 (노선별 건수 + 최고위험등급 색상 원)
+- zoom ≥ 1.5 (지역): 선분 표시 + `block-markers` 표시 (구간 중심점 ◆, 위험등급 색상)
+- 배지 건수: 동일 `block_order.id` 중복 제거 후 카운트 (상·하선이 각각 feature로 분리되어도 1건)
+- `block-segments` useEffect deps에 `allRailGeo` 포함 — D3 init(레이어 생성) 이후 재실행 보장
+
 **D3 race condition 방지:**  
-`facility-points` 렌더링 useEffect의 deps에 `allRailGeo` 포함 — `railStations`가 캐시에서 즉시 로드될 때 `allRailGeo` 미초기화 시 조기 반환하는 문제 방지.
+`facility-points` 렌더링 useEffect와 `block-segments` 렌더링 useEffect의 deps에 `allRailGeo` 포함 — 캐시에서 즉시 로드될 때 D3 레이어 미초기화 상태에서 no-op 후 재실행 불가 문제 방지.
+
+**브라우저 줌 전역 차단:**  
+`main.tsx`에서 `document.addEventListener('wheel', e.ctrlKey && e.preventDefault(), {passive:false})` 등록 — Ctrl+스크롤 / 트랙패드 핀치로 인한 브라우저 레벨 줌 전체 차단.
 
 ### 메뉴 구조
 
@@ -221,6 +237,21 @@ VITE_API_URL=http://localhost:8000   # LAN 접속 시 맥 IP로 변경
 const canRegister = user?.role === 'org_admin' || user?.role === 'system_superuser';
 const isSuperuser = user?.role === 'system_superuser';
 ```
+
+### 위험등급 (danger_level)
+
+`block_orders.danger_level` — 차단작업의 위험 수준 분류.
+
+| 값 | 표시 | 색상 |
+|---|---|---|
+| `'A'` | A 위험 | `#ef4444` (적색) |
+| `'B'` | B 주의 | `#f59e0b` (황색) |
+| `'C'` | C 일반 | `#10b981` (녹색) |
+| `null` | 미지정 | `#6b7280` (회색) |
+
+- 차단명령 등록 시 설정하거나 차단현황도 팝업에서 사후 등록 가능
+- 차단현황도·차단명령·캘린더 3개 페이지에서 등급별 필터 지원
+- 지도 마커(◆)와 노선 집계 배지 색상으로 시각화
 
 ### 철도 좌표계
 

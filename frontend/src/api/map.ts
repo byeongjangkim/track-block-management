@@ -55,6 +55,23 @@ export async function fetchDepotRoutes(): Promise<DepotRoute[]> {
   return res.data;
 }
 
+export interface RailSubstation {
+  id: number;
+  name: string;
+  kp: number;
+  detail_category: string | null;  // 'SS' | 'SP' | 'SSP' | 'PP' | 'ATP' 등
+  lat: number | null;
+  lon: number | null;
+}
+
+export async function fetchRailSubstations(params: {
+  route_id?: number;
+  rail_route_id?: number;
+}): Promise<RailSubstation[]> {
+  const res = await api.get<RailSubstation[]>('/map/rail-routes/substations', { params });
+  return res.data;
+}
+
 export async function fetchAllRailRouteGeometry(lod = 'high'): Promise<RailRouteFeatureCollection> {
   const res = await api.get<RailRouteFeatureCollection>('/map/rail-routes/all/geometry', {
     params: { lod },
@@ -171,6 +188,7 @@ export interface BlockSegmentProps {
   end_time: string;
   field: string;
   block_type: string;
+  danger_level: string | null;   // 'A'(위험) / 'B'(주의) / 'C'(일반) / null
   organization_id: number | null;
 }
 

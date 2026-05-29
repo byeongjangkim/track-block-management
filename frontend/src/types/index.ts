@@ -65,6 +65,9 @@ export interface BlockOrder {
   section_note: string | null;
   start_facility_id: number | null;
   end_facility_id: number | null;
+  start_rail_facility_id: number | null;
+  end_rail_facility_id: number | null;
+  danger_level: string | null;   // 'A'(위험) / 'B'(주의) / 'C'(일반) / null
   work_date: string;      // YYYY-MM-DD
   start_time: string;     // HH:mm:ss
   end_time: string;
@@ -105,6 +108,9 @@ export interface BlockOrderCreate {
   section_note?: string;
   start_facility_id?: number | null;
   end_facility_id?: number | null;
+  start_rail_facility_id?: number | null;
+  end_rail_facility_id?: number | null;
+  danger_level?: string | null;
   work_date: string;
   start_time: string;
   end_time: string;

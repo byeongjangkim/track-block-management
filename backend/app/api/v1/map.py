@@ -26,7 +26,7 @@ from app.models.block_order import BlockOrder
 from app.models.facility import Facility
 from app.models.org_viewport import OrgViewport
 from app.models.organization import Organization, OrganizationRouteRange
-from app.models.rail_baseline import RailRoute, RailRouteRegionBoundary
+from app.models.rail_baseline import RailFacility, RailFacilityClassification, RailRoute, RailRouteRegionBoundary
 from app.models.route import Route
 from app.models.user import User
 
@@ -114,6 +114,63 @@ def get_depot_routes(
             "route_category":     r.route_category,
         }
         for r in rows
+    ]
+
+
+# ── 전차선단전용 변전설비 목록 ───────────────────────────────────────────────
+
+@router.get("/rail-routes/substations")
+def get_rail_substations(
+    route_id: int | None = Query(None, description="OLD routes.id — rail_routes와 이름 매칭"),
+    rail_route_id: int | None = Query(None, description="NEW rail_routes.id (직접 지정)"),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """전차선단전 등록 폼용 변전설비 목록 (SS/SP/SSP/PP/ATP 등).
+
+    route_id(OLD routes) 또는 rail_route_id(NEW rail_routes) 중 하나를 전달.
+    route_id 전달 시 routes.name = rail_routes.name 으로 매칭.
+    """
+    import re as _re
+
+    resolved_rail_route_id: int | None = rail_route_id
+    if resolved_rail_route_id is None and route_id is not None:
+        old_route = db.query(Route).filter(Route.id == route_id).first()
+        if old_route:
+            base_name = _re.sub(r'\s*\([^)]*\)\s*$', '', old_route.name).strip()
+            rail_route = db.query(RailRoute).filter(
+                (RailRoute.name == old_route.name) | (RailRoute.name == base_name)
+            ).first()
+            if rail_route:
+                resolved_rail_route_id = rail_route.id
+
+    if resolved_rail_route_id is None:
+        return []
+
+    rows = (
+        db.query(RailFacility, RailFacilityClassification)
+        .join(RailFacilityClassification, RailFacilityClassification.id == RailFacility.classification_id)
+        .filter(
+            RailFacility.rail_route_id == resolved_rail_route_id,
+            RailFacility.is_active.is_(True),
+            RailFacilityClassification.major_category == "전기설비",
+            RailFacilityClassification.sub_category == "변전설비",
+        )
+        .order_by(RailFacility.kp_start)
+        .all()
+    )
+
+    return [
+        {
+            "id":              rf.id,
+            "name":            rf.name,
+            "kp":              rf.kp_start,
+            "detail_category": cls.detail_category,
+            "lat":             rf.lat,
+            "lon":             rf.lon,
+        }
+        for rf, cls in rows
+        if rf.kp_start is not None
     ]
 
 
@@ -496,22 +553,46 @@ def get_block_order_segments(
         end_kp = bo.end_kp if bo.end_kp is not None else bo.end_km
 
         if start_kp is None and end_kp is None:
-            # 전차선 단전 구간 — 시설물 GPS 직접 사용
+            # 전차선 단전 구간 — 변전소 KP 보간 우선, GPS fallback
             section_type = "power_cut"
-            f_start = db.query(Facility).filter(Facility.id == bo.start_facility_id).first() \
-                if bo.start_facility_id else None
-            f_end   = db.query(Facility).filter(Facility.id == bo.end_facility_id).first() \
-                if bo.end_facility_id else None
-            if f_start is None or f_end is None:
-                continue
-            if f_start.lat and f_start.lon and f_end.lat and f_end.lon:
-                coords = [[f_start.lon, f_start.lat], [f_end.lon, f_end.lat]]
-            elif bo.rail_route_id and f_start.km is not None and f_end.km is not None:
-                coords = _rail_kp_range_coords(db, bo.rail_route_id, f_start.km, f_end.km)
+
+            # NEW: rail_facilities FK 우선 — KP 보간으로 실제 노선 경로 표시
+            if bo.start_rail_facility_id and bo.end_rail_facility_id:
+                rf_start = db.query(RailFacility).filter(RailFacility.id == bo.start_rail_facility_id).first()
+                rf_end   = db.query(RailFacility).filter(RailFacility.id == bo.end_rail_facility_id).first()
+                if rf_start is None or rf_end is None:
+                    continue
+                pcut_kp_start = rf_start.kp_start
+                pcut_kp_end   = rf_end.kp_start
+                if bo.rail_route_id and pcut_kp_start is not None and pcut_kp_end is not None:
+                    coords = _rail_kp_range_coords(db, bo.rail_route_id, pcut_kp_start, pcut_kp_end)
+                elif rf_start.lat and rf_start.lon and rf_end.lat and rf_end.lon:
+                    # rail_route_id 없을 때만 GPS 직선 fallback
+                    coords = [[rf_start.lon, rf_start.lat], [rf_end.lon, rf_end.lat]]
+                else:
+                    continue
+                start_kp = pcut_kp_start
+                end_kp   = pcut_kp_end
+                display_km = f"{pcut_kp_start}~{pcut_kp_end}"
+                section_note = bo.section_note or f"{rf_start.name}~{rf_end.name}"
             else:
-                continue
-            display_km = f"{f_start.km}~{f_end.km}"
-            section_note = bo.section_note or f"{f_start.name}~{f_end.name}"
+                # LEGACY: OLD facilities FK fallback
+                f_start = db.query(Facility).filter(Facility.id == bo.start_facility_id).first() \
+                    if bo.start_facility_id else None
+                f_end   = db.query(Facility).filter(Facility.id == bo.end_facility_id).first() \
+                    if bo.end_facility_id else None
+                if f_start is None or f_end is None:
+                    continue
+                if bo.rail_route_id and f_start.km is not None and f_end.km is not None:
+                    coords = _rail_kp_range_coords(db, bo.rail_route_id, f_start.km, f_end.km)
+                    start_kp = f_start.km
+                    end_kp   = f_end.km
+                elif f_start.lat and f_start.lon and f_end.lat and f_end.lon:
+                    coords = [[f_start.lon, f_start.lat], [f_end.lon, f_end.lat]]
+                else:
+                    continue
+                display_km = f"{f_start.km}~{f_end.km}"
+                section_note = bo.section_note or f"{f_start.name}~{f_end.name}"
         else:
             section_type = "normal"
             if start_kp is None or end_kp is None:
@@ -527,31 +608,35 @@ def get_block_order_segments(
         if len(coords) < 2:
             continue
 
-        features.append({
-            "type": "Feature",
-            "properties": {
-                "id":              bo.id,
-                "route_id":        bo.route_id,
-                "rail_route_id":   bo.rail_route_id,
-                "route_code":      route_code,
-                "route_name":      route_name,
-                "direction":       bo.direction,
-                "section_type":    section_type,
-                "start_km":        bo.start_km,
-                "end_km":          bo.end_km,
-                "start_kp":        start_kp,
-                "end_kp":          end_kp,
-                "section_note":    section_note,
-                "display_km":      display_km,
-                "work_date":       bo.work_date.isoformat(),
-                "start_time":      bo.start_time.strftime("%H:%M"),
-                "end_time":        bo.end_time.strftime("%H:%M"),
-                "field":           bo.field,
-                "block_type":      bo.block_type,
-                "organization_id": bo.organization_id,
-            },
-            "geometry": {"type": "LineString", "coordinates": coords},
-        })
+        # BOTH 방향: UP + DOWN 2개 feature 생성 (D3에서 각각 상/하선 색으로 표시)
+        directions = ["UP", "DOWN"] if bo.direction == "BOTH" else [bo.direction]
+        for dir_val in directions:
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "id":              bo.id,
+                    "route_id":        bo.route_id,
+                    "rail_route_id":   bo.rail_route_id,
+                    "route_code":      route_code,
+                    "route_name":      route_name,
+                    "direction":       dir_val,
+                    "section_type":    section_type,
+                    "start_km":        bo.start_km,
+                    "end_km":          bo.end_km,
+                    "start_kp":        start_kp,
+                    "end_kp":          end_kp,
+                    "section_note":    section_note,
+                    "display_km":      display_km,
+                    "work_date":       bo.work_date.isoformat(),
+                    "start_time":      bo.start_time.strftime("%H:%M"),
+                    "end_time":        bo.end_time.strftime("%H:%M"),
+                    "field":           bo.field,
+                    "block_type":      bo.block_type,
+                    "danger_level":    bo.danger_level,
+                    "organization_id": bo.organization_id,
+                },
+                "geometry": {"type": "LineString", "coordinates": coords},
+            })
 
     return {"type": "FeatureCollection", "features": features, "work_date": target_date.isoformat()}
 

@@ -15,8 +15,10 @@ class BlockOrderCreate(BaseModel):
     start_kp: float | None = None
     end_kp: float | None = None
     section_note: str | None = None     # 단전구간명 (예: "청도SP~밀양SS")
-    start_facility_id: int | None = None  # 전차선 단전 시작 변전소 (facilities.id)
-    end_facility_id: int | None = None    # 전차선 단전 종료 변전소 (facilities.id)
+    start_facility_id: int | None = None       # 전차선 단전 시작 변전소 — OLD facilities.id
+    end_facility_id: int | None = None         # 전차선 단전 종료 변전소 — OLD facilities.id
+    start_rail_facility_id: int | None = None  # 전차선 단전 시작 변전소 — NEW rail_facilities.id
+    end_rail_facility_id: int | None = None    # 전차선 단전 종료 변전소 — NEW rail_facilities.id
     work_date: date
     start_time: time
     end_time: time
@@ -40,6 +42,7 @@ class BlockOrderCreate(BaseModel):
     reason: str | None = None
     safety_items: str | None = None
     track_name: str | None = None
+    danger_level: str | None = None  # 'A'(위험) / 'B'(주의) / 'C'(일반) / None
     note: str | None = None
 
     @field_validator("direction")
@@ -61,6 +64,8 @@ class BlockOrderUpdate(BaseModel):
     section_note: str | None = None
     start_facility_id: int | None = None
     end_facility_id: int | None = None
+    start_rail_facility_id: int | None = None
+    end_rail_facility_id: int | None = None
     work_date: date | None = None
     start_time: time | None = None
     end_time: time | None = None
@@ -84,6 +89,7 @@ class BlockOrderUpdate(BaseModel):
     reason: str | None = None
     safety_items: str | None = None
     track_name: str | None = None
+    danger_level: str | None = None
     note: str | None = None
 
 
@@ -100,6 +106,8 @@ class BlockOrderResponse(BaseModel):
     section_note: str | None
     start_facility_id: int | None
     end_facility_id: int | None
+    start_rail_facility_id: int | None
+    end_rail_facility_id: int | None
     work_date: date
     start_time: time
     end_time: time
@@ -123,6 +131,7 @@ class BlockOrderResponse(BaseModel):
     reason: str | None
     safety_items: str | None
     track_name: str | None
+    danger_level: str | None
     document_path: str | None
     note: str | None
     created_by: int

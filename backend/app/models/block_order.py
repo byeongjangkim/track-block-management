@@ -28,12 +28,19 @@ class BlockOrder(Base):
     end_kp: Mapped[float | None] = mapped_column(Float, nullable=True)
     section_note: Mapped[str | None] = mapped_column(String(200))         # 단전구간명 등 (예: "청도SP~밀양SS")
 
-    # 전차선 단전 변전소 FK (지도 표시용 — facilities.km 에서 좌표 계산)
+    # 전차선 단전 변전소 FK — OLD facilities.id (레거시)
     start_facility_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("facilities.id"), nullable=True
     )
     end_facility_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("facilities.id"), nullable=True
+    )
+    # 전차선 단전 변전소 FK — NEW rail_facilities.id (KP 기반 GPS 사용)
+    start_rail_facility_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("rail_facilities.id"), nullable=True
+    )
+    end_rail_facility_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("rail_facilities.id"), nullable=True
     )
 
     # 일시
@@ -71,6 +78,9 @@ class BlockOrder(Base):
 
     # 기지 내 선로/구역 (기지 노선 작업 시 사용, 본선 작업 시 NULL)
     track_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 위험등급: 'A'(위험) / 'B'(주의) / 'C'(일반) / NULL(미지정)
+    danger_level: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     # 메타
     note: Mapped[str | None] = mapped_column(Text)

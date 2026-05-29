@@ -12,13 +12,13 @@
  *     └ 위험/보호구간
  *   [차단명령 목록]
  */
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import { fetchOrganizations } from '../api/organizations';
 import { fetchRoutes } from '../api/routes';
-import { fetchBlockOrders } from '../api/blockOrders';
+import { fetchBlockOrders, updateBlockOrder } from '../api/blockOrders';
 import { fetchBlockSegments, fetchRailRouteRegionBoundaries } from '../api/map';
 import type { BlockSegmentCollection } from '../api/map';
 import RailwayMap from '../components/map/RailwayMap';
@@ -31,6 +31,9 @@ function fmtTime(t: string) { return t.slice(0, 5); }
 
 const DIR_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선', BOTH: '전체' };
 const DIR_COLOR: Record<string, string>  = { UP: '#ef4444', DOWN: '#f97316', BOTH: '#8b5cf6' };
+
+const DANGER_COLOR: Record<string, string> = { A: '#ef4444', B: '#f59e0b', C: '#10b981' };
+const DANGER_LABEL: Record<string, string> = { A: 'A 위험', B: 'B 주의', C: 'C 일반' };
 
 const DEFAULT_FACILITY_FILTER: FacilityFilter = {
   역관리역:       true,
@@ -141,6 +144,12 @@ export default function BlockMapPage() {
   const [filterExternal, setFilterExternal] = useState<boolean | null>(null);
   const [filterField,    setFilterField]    = useState<string | null>(null);
   const [selectedId,     setSelectedId]     = useState<number | null>(null);
+  const [filterDangerLevel, setFilterDangerLevel] = useState<string | null>(null);
+
+  // ── 드래그 패널 ─────────────────────────────────────────────────────────────
+  const mainRef  = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
 
   // ── 지도 설정 ───────────────────────────────────────────────────────────────
   const [selectedOrgId,        setSelectedOrgId]        = useState<number | null>(user?.organization_id ?? null);
@@ -209,11 +218,6 @@ export default function BlockMapPage() {
 
   // ── 파생 데이터 ──────────────────────────────────────────────────────────────
 
-  const onMapIds = useMemo(
-    () => new Set((blockSegments?.features ?? []).map((f) => f.properties.id)),
-    [blockSegments],
-  );
-
   const routeMap = useMemo(
     () => new Map<number, Route>(routes.map((r) => [r.id, r])),
     [routes],
@@ -223,6 +227,47 @@ export default function BlockMapPage() {
     () => (filterRouteId != null ? (routeMap.get(filterRouteId)?.code ?? null) : null),
     [filterRouteId, routeMap],
   );
+
+  // ── 위험등급 필터 파생 (onMapIds보다 먼저 정의) ─────────────────────────────
+
+  const filteredBlockOrders = useMemo(() => {
+    if (filterDangerLevel === null) return blockOrders;
+    if (filterDangerLevel === 'none') return blockOrders.filter((bo) => bo.danger_level === null);
+    return blockOrders.filter((bo) => bo.danger_level === filterDangerLevel);
+  }, [blockOrders, filterDangerLevel]);
+
+  const filteredBlockSegments = useMemo((): BlockSegmentCollection | null => {
+    if (!blockSegments) return null;
+    if (filterDangerLevel === null) return blockSegments;
+    const feats = blockSegments.features.filter((f) =>
+      filterDangerLevel === 'none'
+        ? f.properties.danger_level === null
+        : f.properties.danger_level === filterDangerLevel
+    );
+    return { ...blockSegments, features: feats };
+  }, [blockSegments, filterDangerLevel]);
+
+  const onMapIds = useMemo(
+    () => new Set((filteredBlockSegments?.features ?? []).map((f) => f.properties.id)),
+    [filteredBlockSegments],
+  );
+
+  const selectedOrder = useMemo(
+    () => (selectedId != null ? blockOrders.find((b) => b.id === selectedId) ?? null : null),
+    [selectedId, blockOrders],
+  );
+
+  // ── 위험등급 업데이트 뮤테이션 ────────────────────────────────────────────────
+
+  const qc = useQueryClient();
+  const dangerMut = useMutation({
+    mutationFn: ({ id, level }: { id: number; level: string | null }) =>
+      updateBlockOrder(id, { danger_level: level }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['block-orders-date'] });
+      qc.invalidateQueries({ queryKey: ['block-segments'] });
+    },
+  });
 
   // ── 핸들러 ───────────────────────────────────────────────────────────────────
 
@@ -255,13 +300,39 @@ export default function BlockMapPage() {
   }
 
   function handleSelect(id: number) {
-    setSelectedId((prev) => (prev === id ? null : id));
+    setSelectedId((prev) => {
+      if (prev === id) { setPanelPos(null); return null; }
+      return id;
+    });
+  }
+
+  function onPanelDragStart(e: React.MouseEvent) {
+    if (!panelRef.current || !mainRef.current) return;
+    e.preventDefault();
+    const panelRect     = panelRef.current.getBoundingClientRect();
+    const containerRect = mainRef.current.getBoundingClientRect();
+    const startPosX  = panelPos?.x ?? (panelRect.left  - containerRect.left);
+    const startPosY  = panelPos?.y ?? (panelRect.top   - containerRect.top);
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+    function onMove(ev: MouseEvent) {
+      setPanelPos({
+        x: startPosX + ev.clientX - startMouseX,
+        y: startPosY + ev.clientY - startMouseY,
+      });
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   }
 
   // ── 렌더 ─────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden min-h-0">
 
       {/* ── 사이드바 ─────────────────────────────────────────────────── */}
       <aside className="w-64 bg-white border-r flex flex-col shrink-0 overflow-hidden">
@@ -300,7 +371,7 @@ export default function BlockMapPage() {
           />
         </div>
 
-        {/* 내부/외부 · 분야 필터 */}
+        {/* 내부/외부 · 분야 · 위험등급 필터 */}
         <div className="px-3 py-2 border-b shrink-0 space-y-2">
           <div>
             <div className="text-xs text-gray-500 mb-1">내부/외부</div>
@@ -339,6 +410,31 @@ export default function BlockMapPage() {
                   className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
                     filterField === v
                       ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs text-gray-500 mb-1">위험등급</div>
+            <div className="flex flex-wrap gap-1">
+              {([
+                [null,   '전체',  'bg-blue-600'],
+                ['A',    'A위험', 'bg-red-500'],
+                ['B',    'B주의', 'bg-yellow-500'],
+                ['C',    'C일반', 'bg-green-500'],
+                ['none', '미지정','bg-gray-400'],
+              ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
+                <button
+                  key={String(v)}
+                  onClick={() => setFilterDangerLevel(v)}
+                  className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                    filterDangerLevel === v
+                      ? `${activeCls} text-white border-transparent`
                       : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                   }`}
                 >
@@ -516,21 +612,27 @@ export default function BlockMapPage() {
             <span>차단명령 목록</span>
             {ordersLoading
               ? <span className="text-blue-400">로딩 중…</span>
-              : <span className="text-gray-400">({blockOrders.length}건)</span>
+              : <span className="text-gray-400">
+                  {filterDangerLevel !== null
+                    ? `${filteredBlockOrders.length}/${blockOrders.length}건`
+                    : `(${blockOrders.length}건)`}
+                </span>
             }
             {onMapIds.size > 0 && (
               <span className="ml-auto text-blue-500 text-[10px]">지도 {onMapIds.size}건</span>
             )}
           </div>
 
-          {blockOrders.length === 0 && !ordersLoading && (
+          {filteredBlockOrders.length === 0 && !ordersLoading && (
             <div className="p-4 text-xs text-gray-400 text-center">
-              해당 날짜에 차단명령이 없습니다.
+              {blockOrders.length === 0
+                ? '해당 날짜에 차단명령이 없습니다.'
+                : '해당 등급의 차단명령이 없습니다.'}
             </div>
           )}
 
           <div className="overflow-y-auto flex-1">
-            {blockOrders.map((bo) => {
+            {filteredBlockOrders.map((bo) => {
               const isSelected = selectedId === bo.id;
               const isOnMap    = onMapIds.has(bo.id);
               const routeName  = routeMap.get(bo.route_id)?.name ?? `노선 #${bo.route_id}`;
@@ -545,6 +647,18 @@ export default function BlockMapPage() {
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-gray-800 truncate">{routeName}</span>
                     <div className="flex items-center gap-1 shrink-0 ml-1">
+                      {bo.danger_level && (
+                        <span
+                          className="text-[9px] px-1 py-0.5 rounded text-white font-medium"
+                          style={{
+                            backgroundColor: bo.danger_level === 'A' ? '#ef4444'
+                              : bo.danger_level === 'B' ? '#f59e0b'
+                              : '#10b981',
+                          }}
+                        >
+                          {bo.danger_level}등급
+                        </span>
+                      )}
                       {bo.is_external && (
                         <span className="text-[9px] px-1 py-0.5 rounded bg-yellow-100 text-yellow-700">외부</span>
                       )}
@@ -555,9 +669,13 @@ export default function BlockMapPage() {
                     </div>
                   </div>
                   <div className="text-gray-500 mt-0.5 flex items-center gap-1">
-                    <span>KP {bo.start_km}~{bo.end_km}km</span>
+                    {bo.block_type === '전차선단전' ? (
+                      <span className="truncate">{bo.section_note ?? 'KP 미지정'}</span>
+                    ) : (
+                      <span>KP {bo.start_km}~{bo.end_km}km</span>
+                    )}
                     <span
-                      className="px-1 rounded text-white text-[9px]"
+                      className="px-1 rounded text-white text-[9px] shrink-0"
                       style={{ backgroundColor: DIR_COLOR[bo.direction] ?? '#888' }}
                     >
                       {DIR_LABEL[bo.direction] ?? bo.direction}
@@ -576,7 +694,7 @@ export default function BlockMapPage() {
       </aside>
 
       {/* ── 지도 영역 ────────────────────────────────────────────────── */}
-      <main className="flex-1 relative overflow-hidden">
+      <main ref={mainRef} className="flex-1 relative overflow-hidden min-h-0 min-w-0">
         <RailwayMap
           orgId={mapOrgId}
           showOrgBoundary={showOrgBoundary && mapOrgId != null}
@@ -584,8 +702,9 @@ export default function BlockMapPage() {
           facilityFilter={showFacilitiesAny ? facilityFilter : null}
           filterRouteCode={filterRouteCode}
           showDangerZone={showDangerZone}
-          blockSegments={blockSegments ?? null}
+          blockSegments={filteredBlockSegments}
           selectedBlockId={selectedId}
+          onBlockSegmentClick={handleSelect}
         />
 
         {/* 날짜·필터 배지 */}
@@ -600,10 +719,126 @@ export default function BlockMapPage() {
           {filterField && (
             <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px]">{filterField}</span>
           )}
-          {blockOrders.length > 0 && onMapIds.size < blockOrders.length && (
-            <span className="text-gray-400">(지도 {onMapIds.size}/{blockOrders.length}건)</span>
+          {filteredBlockOrders.length > 0 && onMapIds.size < filteredBlockOrders.length && (
+            <span className="text-gray-400">(지도 {onMapIds.size}/{filteredBlockOrders.length}건)</span>
           )}
         </div>
+
+        {/* 차단명령 상세 패널 — 드래그 가능 */}
+        {selectedOrder && (
+          <div
+            ref={panelRef}
+            className={`absolute bg-white border border-gray-200 rounded-xl shadow-xl z-20 w-80 select-none ${
+              panelPos ? '' : 'bottom-4 left-1/2 -translate-x-1/2'
+            }`}
+            style={panelPos ? { top: panelPos.y, left: panelPos.x } : undefined}
+          >
+            {/* 드래그 핸들 헤더 */}
+            <div
+              className="flex items-center justify-between px-3 py-2 border-b bg-gray-50 rounded-t-xl cursor-grab active:cursor-grabbing"
+              onMouseDown={onPanelDragStart}
+            >
+              <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
+                <span className="font-semibold text-gray-800 text-xs truncate">
+                  {routeMap.get(selectedOrder.route_id)?.name ?? `노선 #${selectedOrder.route_id}`}
+                </span>
+                <span
+                  className="px-1.5 py-0.5 rounded text-white text-[10px] font-medium shrink-0"
+                  style={{ backgroundColor: DIR_COLOR[selectedOrder.direction] ?? '#888' }}
+                >
+                  {DIR_LABEL[selectedOrder.direction] ?? selectedOrder.direction}
+                </span>
+                {selectedOrder.danger_level && (
+                  <span
+                    className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold shrink-0"
+                    style={{ backgroundColor: DANGER_COLOR[selectedOrder.danger_level] ?? '#888' }}
+                  >
+                    {DANGER_LABEL[selectedOrder.danger_level] ?? selectedOrder.danger_level}
+                  </span>
+                )}
+              </div>
+              <button
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => { setSelectedId(null); setPanelPos(null); }}
+                className="text-gray-400 hover:text-gray-700 text-xs leading-none ml-2 shrink-0"
+              >✕</button>
+            </div>
+
+            {/* 상세 내용 */}
+            <div className="px-3 py-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+              <span className="text-gray-400">구간</span>
+              <span className="text-gray-800">
+                {selectedOrder.block_type === '전차선단전'
+                  ? (selectedOrder.section_note ?? 'KP 미지정')
+                  : `KP ${selectedOrder.start_km}~${selectedOrder.end_km}km`}
+              </span>
+              <span className="text-gray-400">작업 시간</span>
+              <span className="text-gray-800">
+                {selectedOrder.work_date} {fmtTime(selectedOrder.start_time)}~{fmtTime(selectedOrder.end_time)}
+              </span>
+              <span className="text-gray-400">분야/종류</span>
+              <span className="text-gray-800">{selectedOrder.field} / {selectedOrder.block_type}</span>
+              <span className="text-gray-400">작업책임자</span>
+              <span className="text-gray-800">
+                {selectedOrder.work_supervisor}
+                {selectedOrder.work_supervisor_phone && (
+                  <span className="text-gray-500 ml-1">({selectedOrder.work_supervisor_phone})</span>
+                )}
+              </span>
+              <span className="text-gray-400">안전관리자</span>
+              <span className="text-gray-800">
+                {selectedOrder.safety_manager}
+                {selectedOrder.safety_manager_phone && (
+                  <span className="text-gray-500 ml-1">({selectedOrder.safety_manager_phone})</span>
+                )}
+              </span>
+              {selectedOrder.electric_safety_manager && (
+                <>
+                  <span className="text-gray-400">전기안전</span>
+                  <span className="text-gray-800">
+                    {selectedOrder.electric_safety_manager}
+                    {selectedOrder.electric_safety_manager_phone && (
+                      <span className="text-gray-500 ml-1">({selectedOrder.electric_safety_manager_phone})</span>
+                    )}
+                  </span>
+                </>
+              )}
+              {selectedOrder.note && (
+                <>
+                  <span className="text-gray-400">비고</span>
+                  <span className="text-gray-600 break-words">{selectedOrder.note}</span>
+                </>
+              )}
+            </div>
+
+            {/* 위험등급 수정 */}
+            <div className="px-3 pb-2.5 pt-1.5 border-t">
+              <div className="text-[10px] text-gray-400 mb-1">위험등급 설정</div>
+              <div className="flex gap-1">
+                {([
+                  [null, '미지정', 'bg-gray-400'],
+                  ['A',  'A 위험', 'bg-red-500'],
+                  ['B',  'B 주의', 'bg-yellow-500'],
+                  ['C',  'C 일반', 'bg-green-500'],
+                ] as [string | null, string, string][]).map(([v, label, cls]) => (
+                  <button
+                    key={String(v)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => dangerMut.mutate({ id: selectedOrder.id, level: v })}
+                    className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
+                      selectedOrder.danger_level === v
+                        ? `${cls} text-white`
+                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                    }`}
+                    disabled={dangerMut.isPending}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
     </div>
