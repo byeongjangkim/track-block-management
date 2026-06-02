@@ -45,8 +45,13 @@ def get_all_rail_routes_geometry(
 ):
     """rail_computed_geometry 기반 전체 노선 GeoJSON.
 
-    properties에 korail_route_code, route_name, line_type 포함.
-    line_type 파라미터로 고속선/일반선 필터 가능.
+    properties:
+      - korail_route_code, route_name, line_type
+      - default_track_count: 노선 기본 선로 수 (1/2/4/6)
+      - default_has_catenary: 노선 기본 전차선 유무
+      - track_sections: KP 구간별 선로수·전차선 예외 목록
+    coordinates: [lon, lat, kp] — GeoJSON 3D 좌표 (세 번째 값 = KP)
+                  D3 렌더링 시 KP로 구간 경계를 찾아 복선/단선 분기 가능.
     """
     where_type = "AND rcg.line_type = :line_type" if line_type else ""
     rows = db.execute(
@@ -56,6 +61,9 @@ def get_all_rail_routes_geometry(
                 rr.korail_route_code,
                 rr.name  AS route_name,
                 rcg.line_type,
+                rr.default_track_count,
+                rr.default_has_catenary,
+                rcg.kp,
                 rcg.lat,
                 rcg.lon,
                 rcg.seq
@@ -67,6 +75,27 @@ def get_all_rail_routes_geometry(
         {"lod": lod, **({"line_type": line_type} if line_type else {})},
     ).fetchall()
 
+    # 노선별 rail_track_sections 조회 (KP 예외 구간)
+    sections_rows = db.execute(
+        text("""
+            SELECT rail_route_id, start_kp, end_kp, track_count, has_catenary, note
+            FROM rail_track_sections
+            ORDER BY rail_route_id, start_kp
+        """)
+    ).fetchall()
+    sections_by_route: dict[int, list] = {}
+    for s in sections_rows:
+        rid = s.rail_route_id
+        if rid not in sections_by_route:
+            sections_by_route[rid] = []
+        sections_by_route[rid].append({
+            "start_kp":    s.start_kp,
+            "end_kp":      s.end_kp,
+            "track_count": s.track_count,
+            "has_catenary": bool(s.has_catenary),
+            "note":        s.note,
+        })
+
     from itertools import groupby as _groupby
 
     features = []
@@ -75,16 +104,20 @@ def get_all_rail_routes_geometry(
         if not pts_list:
             continue
         first = pts_list[0]
-        coordinates = [[r.lon, r.lat] for r in pts_list]
+        # [lon, lat, kp] — KP를 세 번째 좌표로 포함
+        coordinates = [[r.lon, r.lat, round(r.kp, 3)] for r in pts_list]
         features.append({
             "type": "Feature",
             "properties": {
-                "rail_route_id":     route_id,
-                "korail_route_code": first.korail_route_code,
-                "route_name":        first.route_name,
-                "line_type":         first.line_type,
-                "lod":               lod,
-                "point_count":       len(coordinates),
+                "rail_route_id":        route_id,
+                "korail_route_code":    first.korail_route_code,
+                "route_name":           first.route_name,
+                "line_type":            first.line_type,
+                "default_track_count":  first.default_track_count,
+                "default_has_catenary": bool(first.default_has_catenary),
+                "track_sections":       sections_by_route.get(route_id, []),
+                "lod":                  lod,
+                "point_count":          len(coordinates),
             },
             "geometry": {"type": "LineString", "coordinates": coordinates},
         })
@@ -255,7 +288,7 @@ def get_all_rail_facility_items(
                    rf.lat, rf.lon,
                    rf.lat_end, rf.lon_end,
                    rf.name AS facility_name,
-                   rf.direction, rf.note,
+                   rf.direction, rf.note, rf.bore_type,
                    c.major_category, c.sub_category, c.detail_category, c.geometry_type
             FROM rail_facilities rf
             JOIN rail_routes rr ON rr.id = rf.rail_route_id
@@ -299,6 +332,7 @@ def get_all_rail_facility_items(
                 "km":            r.kp_start,
                 "km_end":        r.kp_end,
                 "direction":     r.direction,
+                "bore_type":     r.bore_type or '복선',
                 "has_station_map": False,
                 "note":          r.note,
                 "route_code":    r.korail_route_code,
@@ -632,6 +666,8 @@ def get_block_order_segments(
                     "end_time":        bo.end_time.strftime("%H:%M"),
                     "field":           bo.field,
                     "block_type":      bo.block_type,
+                    "work_type":       bo.work_type,
+                    "implementer":     bo.implementer,
                     "danger_level":    bo.danger_level,
                     "organization_id": bo.organization_id,
                 },

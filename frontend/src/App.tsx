@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './store/authStore';
+import { useSettingsStore } from './store/settingsStore';
 import { getMe } from './api/auth';
 import Layout from './components/common/Layout';
 import LoginPage from './pages/LoginPage';
@@ -15,6 +16,7 @@ import ReferenceDataLayout from './pages/ReferenceDataLayout';
 import RouteMasterPage from './pages/RouteMasterPage';
 import StationKpAdminPage from './pages/StationKpAdminPage';
 import BaselineValidationPage from './pages/BaselineValidationPage';
+import SystemSettingsPage from './pages/SystemSettingsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,11 +30,17 @@ const queryClient = new QueryClient({
 // 페이지 새로고침 시 token은 있지만 user가 없는 경우 /auth/me로 복원
 function AuthHydrator() {
   const { token, user, setAuth, clearAuth } = useAuthStore();
+  const loadSettings = useSettingsStore((s) => s.loadSettings);
+
   useEffect(() => {
     if (token && !user) {
       getMe()
         .then((me) => setAuth(token, me))
         .catch(() => clearAuth());
+    }
+    // 로그인 상태이면 시스템 설정 로드 (지도 색상 반영)
+    if (token) {
+      loadSettings();
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
@@ -70,7 +78,8 @@ export default function App() {
           </Route>
 
           {/* 시스템 관리 (superuser) */}
-          <Route path="/admin/users" element={<RequireAuth><UsersAdminPage /></RequireAuth>} />
+          <Route path="/admin/users"     element={<RequireAuth><UsersAdminPage /></RequireAuth>} />
+          <Route path="/admin/settings"  element={<RequireAuth><SystemSettingsPage /></RequireAuth>} />
 
           {/* 구 경로 → 기준정보 관리로 리다이렉트 */}
           <Route path="/admin/facilities" element={<Navigate to="/admin/reference/facilities" replace />} />

@@ -12,7 +12,7 @@
  *     └ 위험/보호구간
  *   [차단명령 목록]
  */
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
@@ -30,7 +30,8 @@ function todayStr() { return new Date().toISOString().slice(0, 10); }
 function fmtTime(t: string) { return t.slice(0, 5); }
 
 const DIR_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선', BOTH: '전체' };
-const DIR_COLOR: Record<string, string>  = { UP: '#ef4444', DOWN: '#f97316', BOTH: '#8b5cf6' };
+// 방향 색상 제거 — 방향은 복선 평행선 위치로 구분 (좌=상선, 우=하선)
+const DIR_COLOR: Record<string, string>  = { UP: '#64748b', DOWN: '#64748b', BOTH: '#6b7280' };
 
 const DANGER_COLOR: Record<string, string> = { A: '#ef4444', B: '#f59e0b', C: '#10b981' };
 const DANGER_LABEL: Record<string, string> = { A: 'A 위험', B: 'B 주의', C: 'C 일반' };
@@ -141,10 +142,19 @@ export default function BlockMapPage() {
   // ── 차단명령 필터 ───────────────────────────────────────────────────────────
   const [workDate,       setWorkDate]       = useState(searchParams.get('date') ?? todayStr());
   const [filterRouteId,  setFilterRouteId]  = useState<number | null>(null);
-  const [filterExternal, setFilterExternal] = useState<boolean | null>(null);
+  const [filterImplementer, setFilterImplementer] = useState<string | null>(null);  // 시행주체
+  const [filterWorkType,    setFilterWorkType]    = useState<string | null>(null);  // 작업형태
   const [filterField,    setFilterField]    = useState<string | null>(null);
   const [selectedId,     setSelectedId]     = useState<number | null>(null);
   const [filterDangerLevel, setFilterDangerLevel] = useState<string | null>(null);
+
+  // 다른 페이지(캘린더·차단명령)에서 block_id 파라미터로 진입 시 자동 선택
+  // useState 초기값으로 한 번만 읽음 (이후 URL 변경에는 반응하지 않음)
+  const [initBlockId] = useState<number | null>(() => {
+    const raw = searchParams.get('block_id');
+    const n   = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) ? n : null;
+  });
 
   // ── 드래그 패널 ─────────────────────────────────────────────────────────────
   const mainRef  = useRef<HTMLDivElement>(null);
@@ -196,15 +206,39 @@ export default function BlockMapPage() {
   }, [routes, orgRouteCodes, isSuperuser]);
 
   const { data: blockOrders = [], isLoading: ordersLoading } = useQuery({
-    queryKey: ['block-orders-date', workDate, filterRouteId, filterExternal, filterField],
+    queryKey: ['block-orders-date', workDate, filterRouteId, filterImplementer, filterWorkType, filterField],
     queryFn: () => fetchBlockOrders({
       date_from:   workDate,
       date_to:     workDate,
       route_id:    filterRouteId ?? undefined,
-      is_external: filterExternal ?? undefined,
+      implementer: filterImplementer ?? undefined,
+      work_type:   filterWorkType ?? undefined,
       field:       filterField ?? undefined,
     }),
     staleTime: 30_000,
+  });
+
+  // 연속 작업 감지용: ±45일 확장 쿼리 (선택된 건 있을 때만 실행)
+  const extDateFrom = useMemo(() => {
+    const d = new Date(workDate);
+    d.setDate(d.getDate() - 45);
+    return d.toISOString().slice(0, 10);
+  }, [workDate]);
+  const extDateTo = useMemo(() => {
+    const d = new Date(workDate);
+    d.setDate(d.getDate() + 45);
+    return d.toISOString().slice(0, 10);
+  }, [workDate]);
+
+  const { data: extBlockOrders = [] } = useQuery({
+    queryKey: ['block-orders-ext', extDateFrom, extDateTo, filterRouteId],
+    queryFn: () => fetchBlockOrders({
+      date_from: extDateFrom,
+      date_to:   extDateTo,
+      route_id:  filterRouteId ?? undefined,
+    }),
+    enabled: !!selectedId,   // 선택된 건이 있을 때만 조회
+    staleTime: 60_000,
   });
 
   const { data: blockSegments } = useQuery<BlockSegmentCollection>({
@@ -215,6 +249,14 @@ export default function BlockMapPage() {
     }),
     staleTime: 30_000,
   });
+
+  // URL block_id → 데이터 로드 완료 후 자동 선택 (최초 1회)
+  useEffect(() => {
+    if (!initBlockId || selectedId !== null) return;
+    if (blockOrders.some(b => b.id === initBlockId)) {
+      setSelectedId(initBlockId);
+    }
+  }, [initBlockId, blockOrders]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 파생 데이터 ──────────────────────────────────────────────────────────────
 
@@ -256,6 +298,75 @@ export default function BlockMapPage() {
     () => (selectedId != null ? blockOrders.find((b) => b.id === selectedId) ?? null : null),
     [selectedId, blockOrders],
   );
+
+  // ── 사업건별 강조 (같은 doc_no = 같은 사업 묶음) ────────────────────────────
+  const highlightedBlockIds = useMemo((): Set<number> | null => {
+    if (!selectedOrder?.doc_no) return null;
+    const sameDocIds = blockOrders
+      .filter((b) => b.doc_no === selectedOrder.doc_no)
+      .map((b) => b.id);
+    if (sameDocIds.length <= 1) return null;  // 1건이면 강조 불필요
+    return new Set(sameDocIds);
+  }, [selectedId, selectedOrder?.doc_no, blockOrders]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 연속 작업 감지 — 같은 노선·방향·구간·분야의 연속 날짜 시리즈 ────────────
+  // 조회 기간(±45일) 내 blockOrders에서 감지
+  const consecutiveSeries = useMemo(() => {
+    if (!selectedOrder) return null;
+
+    // ±45일 확장 데이터에서 같은 노선+방향+분야 감지
+    const candidates = extBlockOrders.filter((b) =>
+      b.rail_route_id === selectedOrder.rail_route_id &&
+      b.direction === selectedOrder.direction &&
+      b.field === selectedOrder.field &&
+      Math.abs((b.start_kp ?? 0) - (selectedOrder.start_kp ?? 0)) < 0.5 &&
+      Math.abs((b.end_kp ?? 0) - (selectedOrder.end_kp ?? 0)) < 0.5
+    );
+
+    if (candidates.length <= 1) return null;
+
+    // 날짜 정렬
+    const sorted = [...candidates].sort((a, b) => a.work_date.localeCompare(b.work_date));
+
+    // 연속 시퀀스에서 selectedOrder가 속하는 구간 찾기
+    let seriesStart = sorted[0].work_date;
+    let seriesEnd   = sorted[0].work_date;
+    let seriesIds   = [sorted[0].id];
+    let inSeries    = false;
+
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = new Date(sorted[i - 1].work_date);
+      const curr = new Date(sorted[i].work_date);
+      const diff = (curr.getTime() - prev.getTime()) / 86_400_000;
+
+      if (diff <= 1) {
+        seriesEnd = sorted[i].work_date;
+        seriesIds.push(sorted[i].id);
+      } else {
+        // 시퀀스 종료: selectedOrder가 이 시퀀스에 속하는지 확인
+        if (seriesIds.includes(selectedOrder.id) && seriesIds.length > 1) {
+          inSeries = true;
+          break;
+        }
+        seriesStart = sorted[i].work_date;
+        seriesEnd   = sorted[i].work_date;
+        seriesIds   = [sorted[i].id];
+      }
+    }
+    // 마지막 시퀀스 확인
+    if (!inSeries && seriesIds.includes(selectedOrder.id) && seriesIds.length > 1) {
+      inSeries = true;
+    }
+
+    if (!inSeries || seriesIds.length <= 1) return null;
+
+    return {
+      dateFrom: seriesStart,
+      dateTo:   seriesEnd,
+      days:     seriesIds.length,
+      ids:      new Set(seriesIds),
+    };
+  }, [selectedOrder, extBlockOrders]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 위험등급 업데이트 뮤테이션 ────────────────────────────────────────────────
 
@@ -337,55 +448,85 @@ export default function BlockMapPage() {
       {/* ── 사이드바 ─────────────────────────────────────────────────── */}
       <aside className="w-64 bg-white border-r flex flex-col shrink-0 overflow-hidden">
 
-        {/* 소속 조직 배지 (non-superuser) */}
-        {isOrgUser && (
-          <div className="px-3 py-2 bg-blue-50 border-b shrink-0">
-            <div className="text-[10px] text-blue-400 mb-0.5 uppercase tracking-wide">소속 조직</div>
-            <div className="text-sm font-semibold text-blue-800">{user?.organization_name}</div>
-          </div>
-        )}
+        {/* 조직 + 날짜 — 한 줄씩 인라인 레이아웃 */}
+        <div className="px-3 py-2 border-b shrink-0 space-y-1.5">
 
-        {/* superuser: 조직 선택 */}
-        {isSuperuser && (
-          <div className="p-3 border-b shrink-0">
-            <label className="block text-xs text-gray-500 mb-1">조직 선택</label>
-            <select
-              value={selectedOrgId ?? ''}
-              onChange={(e) => setSelectedOrgId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full border rounded px-2 py-1 text-xs"
-            >
-              <option value="">전국 조망</option>
-              {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
-          </div>
-        )}
+          {/* 소속 조직 — 조직명 한 줄 표시 (non-superuser) */}
+          {isOrgUser && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400 shrink-0 w-7">조직</span>
+              <span className="text-xs font-semibold text-blue-700 truncate">{user?.organization_name}</span>
+            </div>
+          )}
 
-        {/* 날짜 선택 */}
-        <div className="p-3 border-b shrink-0">
-          <label className="block text-xs text-gray-500 mb-1">작업 날짜</label>
-          <input
-            type="date"
-            value={workDate}
-            onChange={(e) => { setWorkDate(e.target.value); setSelectedId(null); }}
-            className="w-full border rounded px-2 py-1 text-sm"
-          />
+          {/* superuser: 조직 선택 드롭다운 한 줄 */}
+          {isSuperuser && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-400 shrink-0 w-7">조직</label>
+              <select
+                value={selectedOrgId ?? ''}
+                onChange={(e) => setSelectedOrgId(e.target.value ? Number(e.target.value) : null)}
+                className="flex-1 border rounded px-1.5 py-1 text-xs min-w-0"
+              >
+                <option value="">전국 조망</option>
+                {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          {/* 날짜 선택 한 줄 */}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400 shrink-0 w-7">일자</label>
+            <input
+              type="date"
+              value={workDate}
+              onChange={(e) => { setWorkDate(e.target.value); setSelectedId(null); }}
+              className="flex-1 border rounded px-1.5 py-1 text-xs min-w-0"
+            />
+          </div>
         </div>
 
-        {/* 내부/외부 · 분야 · 위험등급 필터 */}
+        {/* 시행주체 · 작업형태 · 분야 · 위험등급 필터 */}
         <div className="px-3 py-2 border-b shrink-0 space-y-2">
+          {/* 시행주체 (철도공사/철도공단/외부) */}
           <div>
-            <div className="text-xs text-gray-500 mb-1">내부/외부</div>
-            <div className="flex gap-1">
+            <div className="text-xs text-gray-500 mb-1">시행주체</div>
+            <div className="flex gap-1 flex-wrap">
               {([
-                [null,  '전체'],
-                [false, '내부'],
-                [true,  '외부'],
-              ] as [boolean | null, string][]).map(([v, label]) => (
+                [null,       '전체',   'bg-blue-600'],
+                ['철도공사', '공사',   'bg-blue-600'],
+                ['철도공단', '공단',   'bg-purple-600'],
+                ['외부',     '외부',   'bg-yellow-500'],
+              ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
                 <button
                   key={String(v)}
-                  onClick={() => setFilterExternal(v)}
+                  onClick={() => setFilterImplementer(v)}
                   className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
-                    filterExternal === v
+                    filterImplementer === v
+                      ? `${activeCls} text-white border-transparent`
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 작업형태 (인력/장비/기계) */}
+          <div>
+            <div className="text-xs text-gray-500 mb-1">작업형태</div>
+            <div className="flex gap-1">
+              {([
+                [null,   '전체'],
+                ['인력', '인력'],
+                ['장비', '장비'],
+                ['기계', '기계'],
+              ] as [string | null, string][]).map(([v, label]) => (
+                <button
+                  key={v ?? 'all'}
+                  onClick={() => setFilterWorkType(v)}
+                  className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
+                    filterWorkType === v
                       ? 'bg-blue-600 text-white border-blue-600'
                       : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                   }`}
@@ -704,17 +845,22 @@ export default function BlockMapPage() {
           showDangerZone={showDangerZone}
           blockSegments={filteredBlockSegments}
           selectedBlockId={selectedId}
+          highlightedBlockIds={highlightedBlockIds}
           onBlockSegmentClick={handleSelect}
         />
 
         {/* 날짜·필터 배지 */}
         <div className="absolute top-3 left-4 bg-white/90 border rounded-lg px-3 py-1.5 text-xs text-gray-600 shadow flex items-center gap-1.5">
           <span>{workDate} 차단현황도</span>
-          {filterExternal === false && (
-            <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px]">내부</span>
+          {filterImplementer && (
+            <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+              filterImplementer === '외부' ? 'bg-yellow-100 text-yellow-700'
+              : filterImplementer === '철도공단' ? 'bg-purple-100 text-purple-700'
+              : 'bg-blue-100 text-blue-700'
+            }`}>{filterImplementer}</span>
           )}
-          {filterExternal === true && (
-            <span className="px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-700 text-[10px]">외부</span>
+          {filterWorkType && (
+            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px]">{filterWorkType}작업</span>
           )}
           {filterField && (
             <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px]">{filterField}</span>
@@ -736,7 +882,12 @@ export default function BlockMapPage() {
             {/* 드래그 핸들 헤더 */}
             <div
               className="flex items-center justify-between px-3 py-2 border-b bg-gray-50 rounded-t-xl cursor-grab active:cursor-grabbing"
-              onMouseDown={onPanelDragStart}
+              onMouseDown={(e) => {
+                // 닫기 버튼 영역(data-close)을 클릭한 경우 드래그 핸들러 실행 안 함
+                const target = e.target as HTMLElement;
+                if (target.closest('[data-panel-close]')) return;
+                onPanelDragStart(e);
+              }}
             >
               <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
                 <span className="font-semibold text-gray-800 text-xs truncate">
@@ -758,9 +909,10 @@ export default function BlockMapPage() {
                 )}
               </div>
               <button
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => { setSelectedId(null); setPanelPos(null); }}
-                className="text-gray-400 hover:text-gray-700 text-xs leading-none ml-2 shrink-0"
+                data-panel-close
+                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+                onClick={(e) => { e.stopPropagation(); setSelectedId(null); setPanelPos(null); }}
+                className="text-gray-400 hover:text-gray-700 text-base leading-none ml-2 shrink-0 px-1"
               >✕</button>
             </div>
 
@@ -809,7 +961,44 @@ export default function BlockMapPage() {
                   <span className="text-gray-600 break-words">{selectedOrder.note}</span>
                 </>
               )}
+              {/* 작업형태·시행주체 */}
+              {selectedOrder.work_type && (
+                <>
+                  <span className="text-gray-400">작업형태</span>
+                  <span className="text-gray-800">{selectedOrder.work_type}작업</span>
+                </>
+              )}
+              <span className="text-gray-400">시행주체</span>
+              <span className="text-gray-800">{selectedOrder.implementer || '철도공사'}</span>
             </div>
+
+            {/* ── 사업건별 정보 ── */}
+            {(highlightedBlockIds || consecutiveSeries) && (
+              <div className="px-3 py-2 border-t bg-blue-50 text-xs space-y-1.5">
+                {/* 같은 문서번호 묶음 */}
+                {highlightedBlockIds && selectedOrder.doc_no && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-blue-700">📋 사업 묶음</span>
+                    <span className="text-blue-600">
+                      문서 {selectedOrder.doc_no} — {highlightedBlockIds.size}건
+                    </span>
+                    <span className="text-blue-400 text-[10px]">(지도에서 강조됨)</span>
+                  </div>
+                )}
+                {/* 연속 작업 시리즈 */}
+                {consecutiveSeries && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-amber-700">📅 연속 작업</span>
+                    <span className="text-amber-600">
+                      {consecutiveSeries.dateFrom} ~ {consecutiveSeries.dateTo}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
+                      {consecutiveSeries.days}일
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 위험등급 수정 */}
             <div className="px-3 pb-2.5 pt-1.5 border-t">

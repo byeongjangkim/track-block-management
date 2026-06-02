@@ -24,9 +24,27 @@ class BlockOrderCreate(BaseModel):
     end_time: time
     field: str
     block_type: str
+    # 작업형태: '인력' | '장비' | '기계'
+    work_type: str | None = None
     has_equipment: bool = False
     has_labor: bool = True
+    # 시행주체: '철도공사' | '철도공단' | '외부'
+    implementer: str = '철도공사'
     is_external: bool = False
+
+    @field_validator("work_type")
+    @classmethod
+    def validate_work_type(cls, v: str | None) -> str | None:
+        if v is not None and v not in ('인력', '장비', '기계'):
+            raise ValueError("work_type은 '인력', '장비', '기계' 중 하나여야 합니다")
+        return v
+
+    @field_validator("implementer")
+    @classmethod
+    def validate_implementer(cls, v: str) -> str:
+        if v not in ('철도공사', '철도공단', '외부'):
+            raise ValueError("implementer는 '철도공사', '철도공단', '외부' 중 하나여야 합니다")
+        return v
     doc_no: str | None = None
     dept_head: str | None = None
     dept_head_phone: str | None = None
@@ -71,8 +89,10 @@ class BlockOrderUpdate(BaseModel):
     end_time: time | None = None
     field: str | None = None
     block_type: str | None = None
+    work_type: str | None = None
     has_equipment: bool | None = None
     has_labor: bool | None = None
+    implementer: str | None = None
     is_external: bool | None = None
     doc_no: str | None = None
     dept_head: str | None = None
@@ -113,8 +133,10 @@ class BlockOrderResponse(BaseModel):
     end_time: time
     field: str
     block_type: str
+    work_type: str | None
     has_equipment: bool
     has_labor: bool
+    implementer: str
     is_external: bool
     doc_no: str | None
     dept_head: str | None

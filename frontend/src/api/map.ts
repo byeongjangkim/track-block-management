@@ -21,17 +21,29 @@ export interface OrgBoundaryCollection {
 
 // ── rail_computed_geometry 기반 노선 (line_type 포함) ────────────────────
 
+export interface TrackSection {
+  start_kp:     number;
+  end_kp:       number;
+  track_count:  number;   // 1=단선 | 2=복선 | 4=복복선 | 6=삼복선
+  has_catenary: boolean;
+  note:         string | null;
+}
+
 export interface RailRouteFeature {
   type: 'Feature';
   properties: {
-    rail_route_id:     number;
-    korail_route_code: string;
-    route_name:        string;
-    line_type:         '고속선' | '일반선';
-    lod:               string;
-    point_count:       number;
+    rail_route_id:          number;
+    korail_route_code:      string;
+    route_name:             string;
+    line_type:              '고속선' | '일반선';
+    default_track_count:    number;   // 노선 기본 선로 수
+    default_has_catenary:   boolean;  // 노선 기본 전차선 유무
+    track_sections:         TrackSection[];  // KP 구간별 예외
+    lod:                    string;
+    point_count:            number;
   };
-  geometry: { type: 'LineString'; coordinates: [number, number][] };
+  // 세 번째 좌표 = KP (GeoJSON 3D 확장)
+  geometry: { type: 'LineString'; coordinates: [number, number, number][] };
 }
 
 export interface RailRouteFeatureCollection {
@@ -148,6 +160,7 @@ export interface FacilityFeatureProps {
   km: number;
   km_end: number | null;
   direction: string | null;
+  bore_type: string;           // 복선 | 단선_상선 | 단선_하선 (터널·교량 선로 적용 방식)
   has_station_map: boolean;
   note: string | null;
   route_code: string;
@@ -188,6 +201,8 @@ export interface BlockSegmentProps {
   end_time: string;
   field: string;
   block_type: string;
+  work_type: string | null;      // 인력 | 장비 | 기계
+  implementer: string;           // 철도공사 | 철도공단 | 외부
   danger_level: string | null;   // 'A'(위험) / 'B'(주의) / 'C'(일반) / null
   organization_id: number | null;
 }

@@ -172,7 +172,7 @@ export default function CalendarPage() {
               {filteredDayOrders.map((o) => (
                 <li
                   key={o.id}
-                  onClick={() => navigate(`/block-map?date=${selectedDate}`)}
+                  onClick={() => navigate(`/block-map?date=${selectedDate}&block_id=${o.id}`)}
                   className="border rounded p-3 text-sm space-y-1 cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-colors"
                 >
                   <div className="flex items-center gap-1.5 flex-wrap">

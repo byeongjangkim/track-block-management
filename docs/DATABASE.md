@@ -89,6 +89,12 @@ CREATE TABLE rail_routes (
 
 고속선 추가: `UPDATE rail_routes SET line_type = '고속선' WHERE korail_route_code = 'Hx';`
 
+**추가 컬럼 (Alembic `tc01_rail_track_sections`):**
+- `default_track_count INTEGER DEFAULT 2` : 1=단선|2=복선|4=복복선|6=삼복선
+- `default_has_catenary BOOLEAN DEFAULT 1` : 전차선 유무 (0=비전철화)
+
+> 구간별 예외: `rail_track_sections` 참조. 없으면 이 기본값 적용.
+
 **기지 노선 (line_type = '기지'):**  
 차량기지·보수기지를 `rail_routes`에 별도 노선으로 등록. `korail_route_code` 형식: `DEP-{약칭}`.  
 KP는 기지 인출선 분기점을 0.0으로 기산. 시드 스크립트: `database/seeds/rail_depots.py`.
@@ -622,9 +628,13 @@ CREATE TABLE block_orders (
     -- 분류
     field            TEXT(30) NOT NULL,           -- '시설' | '전기' | '건축'
     block_type       TEXT(30) NOT NULL,
-    has_equipment    BOOLEAN  DEFAULT 0,
-    has_labor        BOOLEAN  DEFAULT 1,
-    is_external      BOOLEAN  DEFAULT 0,
+    -- 작업형태 (Alembic tc02): '인력'|'장비'|'기계' (NULL=미지정)
+    work_type        TEXT(10),
+    has_equipment    BOOLEAN  DEFAULT 0,          -- (레거시) 장비작업 여부
+    has_labor        BOOLEAN  DEFAULT 1,          -- (레거시) 인력작업 여부
+    -- 시행주체 (Alembic tc02): '철도공사'|'철도공단'|'외부'
+    implementer      TEXT(20) NOT NULL DEFAULT '철도공사',
+    is_external      BOOLEAN  DEFAULT 0,          -- (레거시) implementer='외부'이면 true
 
     -- 문서
     doc_no           TEXT(30),
@@ -669,6 +679,80 @@ CREATE TABLE block_orders (
 
 ---
 
+### 추가 테이블: `rail_track_sections` — 노선 구간별 선로수·전차선 예외
+
+> Alembic `tc01_rail_track_sections`
+
+```sql
+CREATE TABLE rail_track_sections (
+    id              INTEGER PRIMARY KEY,
+    rail_route_id   INTEGER NOT NULL REFERENCES rail_routes(id) ON DELETE CASCADE,
+    start_kp        REAL    NOT NULL,
+    end_kp          REAL    NOT NULL,
+    track_count     INTEGER NOT NULL DEFAULT 2,   -- 1|2|4|6
+    has_catenary    BOOLEAN NOT NULL DEFAULT 1,
+    note            TEXT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX ix_rail_track_sections_route ON rail_track_sections (rail_route_id);
+```
+
+- `rail_routes.default_track_count/has_catenary` 가 노선 전체 기본값
+- 이 테이블에 KP 구간이 등록되면 해당 구간은 기본값을 덮어씀
+- 조회 우선순위: `rail_track_sections` → (없으면) `rail_routes` 기본값
+- CRUD: `GET/POST /api/v1/rail-reference/routes/{id}/track-sections`
+- 기본값 수정: `PATCH /api/v1/rail-reference/routes/{id}/defaults`
+
+### 추가 컬럼: `rail_facilities.bore_type` — 터널·교량 선로 적용 방식
+
+> Alembic `tc03_bore_type`
+
+```sql
+ALTER TABLE rail_facilities ADD COLUMN bore_type TEXT(20) NOT NULL DEFAULT '복선';
+-- 값: '복선' | '단선_상선' | '단선_하선'
+```
+
+| 값 | 의미 | 지도 표시 |
+|---|---|---|
+| `복선` | 상·하선이 하나의 구조물 안에 있음 (기본) | 양쪽 선로를 감싸는 하나의 심볼 |
+| `단선_상선` | 상선 전용 단선 터널/교량 | 상선 위치에만 |
+| `단선_하선` | 하선 전용 단선 터널/교량 | 하선 위치에만 |
+
+### 추가 테이블: `system_settings` — 시스템 설정 (색상)
+
+> Alembic `tc04_system_settings`
+
+```sql
+CREATE TABLE system_settings (
+    id            INTEGER PRIMARY KEY,
+    category      TEXT(50)  NOT NULL,   -- 'route_colors'|'block_colors'|'danger_colors'|'facility_colors'
+    key           TEXT(50)  NOT NULL,
+    value         TEXT(255) NOT NULL,   -- 현재값 (#RRGGBB)
+    default_value TEXT(255) NOT NULL,   -- 기본값 (복원용)
+    label         TEXT(100),
+    description   TEXT(255),
+    sort_order    INTEGER   NOT NULL DEFAULT 0,
+    updated_by    INTEGER REFERENCES users(id),
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (category, key)
+);
+```
+
+**카테고리별 항목:**
+| category | 항목 수 | 주요 키 |
+|---|---|---|
+| `route_colors` | 4 | highway, electrified, non_electrified, catenary_cut |
+| `block_colors` | 2 | track_block, danger_zone |
+| `danger_colors` | 4 | level_a, level_b, level_c, none |
+| `facility_colors` | 12 | station_master, station_general, tunnel_bridge 등 |
+
+**API**: `GET/PATCH /api/v1/settings`, `POST /api/v1/settings/{cat}/{key}/reset`
+
+**적용 방식**: 새로고침 후 반영 (settingsStore → D3 색상 상수)
+
+---
+
 ## 권한 검증 로직
 
 | 역할 | 조건 |
@@ -681,6 +765,16 @@ CREATE TABLE block_orders (
 
 크로스-org (여러 조직 관할에 걸친 구간): `system_superuser`만 등록 가능.  
 기지 작업 (`line_type='기지'`): legacy route가 없으므로 KP 검증 없이 org_admin이면 허용.
+
+---
+
+## 시스템 설정 초기화
+
+시스템 설정은 `tc04_system_settings` 마이그레이션 실행 시 자동 시드된다.  
+수동 재초기화가 필요한 경우:
+```
+POST /api/v1/settings/reset-all  (system_superuser 인증 필요)
+```
 
 ---
 

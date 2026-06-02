@@ -15,6 +15,11 @@ class RailRoute(Base):
     # 고속선 | 일반선 — DB 레벨 분류 (route_code suffix 방식 대체)
     line_type: Mapped[str] = mapped_column(String(20), nullable=False, default="일반선")
     route_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # 선로 구성 기본값 — rail_track_sections 미등록 구간에 적용
+    # track_count: 1=단선 | 2=복선 | 4=복복선 | 6=삼복선
+    default_track_count: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    # has_catenary: True=전차선 있음(전철화) | False=비전철화
+    default_has_catenary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     start_station_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     start_station_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     start_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -36,6 +41,38 @@ class RailRoute(Base):
     baseline_points: Mapped[list["RailBaselinePoint"]] = relationship(back_populates="rail_route")
     facilities: Mapped[list["RailFacility"]] = relationship(back_populates="rail_route")
     computed_geometry: Mapped[list["RailComputedGeometry"]] = relationship(back_populates="rail_route")
+    track_sections: Mapped[list["RailTrackSection"]] = relationship(
+        back_populates="rail_route", cascade="all, delete-orphan", order_by="RailTrackSection.start_kp"
+    )
+
+
+class RailTrackSection(Base):
+    """노선 구간별 선로 수·전차선 유무 예외 정의.
+
+    rail_routes.default_track_count / default_has_catenary 가 노선 전체 기본값이며,
+    이 테이블에 등록된 KP 구간은 해당 기본값을 재정의한다.
+    """
+    __tablename__ = "rail_track_sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rail_route_id: Mapped[int] = mapped_column(
+        ForeignKey("rail_routes.id", ondelete="CASCADE"), nullable=False
+    )
+    start_kp: Mapped[float] = mapped_column(Float, nullable=False)
+    end_kp: Mapped[float] = mapped_column(Float, nullable=False)
+    # 1=단선 | 2=복선 | 4=복복선 | 6=삼복선
+    track_count: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    # True=전차선 있음(전철화) | False=비전철화
+    has_catenary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False
+    )
+
+    rail_route: Mapped["RailRoute"] = relationship(back_populates="track_sections")
 
 
 class RailStation(Base):
@@ -141,6 +178,11 @@ class RailFacility(Base):
     management_office_id: Mapped[int | None] = mapped_column(
         ForeignKey("rail_facility_management_offices.id"), nullable=True
     )
+    # 터널·교량 선로 적용 방식:
+    #   '복선'     : 상·하선 한 구조물 (기본값)
+    #   '단선_상선': 상선 전용
+    #   '단선_하선': 하선 전용
+    bore_type: Mapped[str] = mapped_column(String(20), nullable=False, default='복선')
     use_as_baseline_anchor: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     source_file: Mapped[str | None] = mapped_column(String(255), nullable=True)

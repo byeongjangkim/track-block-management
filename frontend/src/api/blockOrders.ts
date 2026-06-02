@@ -21,6 +21,8 @@ export async function fetchBlockOrders(params?: {
   date_to?: string;
   organization_id?: number;
   field?: string;
+  work_type?: string;
+  implementer?: string;
   is_external?: boolean;
   start_km_from?: number;
   end_km_to?: number;

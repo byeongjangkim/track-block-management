@@ -15,9 +15,15 @@ interface Props {
   onClose: () => void;
 }
 
-const ALL_FIELDS = ['시설', '전기', '건축'];
-const BLOCK_TYPES = ['단선차단', '복선차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
+const ALL_FIELDS    = ['시설', '전기', '건축'];
+const BLOCK_TYPES   = ['단선차단', '복선차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
 const POWER_CUT_TYPE = '전차선단전';
+const WORK_TYPES    = [
+  { value: '인력', label: '인력작업', desc: '밀차 등 인력·공기구류' },
+  { value: '장비', label: '장비작업', desc: '보선장비·전철장비 등 철도차량' },
+  { value: '기계', label: '기계작업', desc: '건설기계관리법 상 건설기계' },
+];
+const IMPLEMENTERS  = ['철도공사', '철도공단', '외부'];
 type RouteType = 'line' | 'depot';
 
 function today() {
@@ -42,8 +48,10 @@ const EMPTY: BlockOrderCreate = {
   end_time: '17:00',
   field: ALL_FIELDS[0],
   block_type: '단선차단',
+  work_type: null,
   has_equipment: false,
   has_labor: true,
+  implementer: '철도공사',
   is_external: false,
   doc_no: '',
   dept_head: '',
@@ -97,8 +105,10 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
           end_time: initial.end_time.slice(0, 5),
           field: initial.field,
           block_type: initial.block_type,
+          work_type: initial.work_type ?? null,
           has_equipment: initial.has_equipment,
           has_labor: initial.has_labor,
+          implementer: initial.implementer ?? '철도공사',
           is_external: initial.is_external,
           doc_no: initial.doc_no ?? '',
           dept_head: initial.dept_head ?? '',
@@ -608,11 +618,64 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
             </div>
           </Field>
 
-          {/* 체크박스 */}
+          {/* 작업형태 */}
+          <Field label="작업형태 *">
+            <div className="flex gap-2 flex-wrap">
+              {WORK_TYPES.map(({ value, label, desc }) => (
+                <label
+                  key={value}
+                  className={`flex-1 min-w-[6rem] border rounded-lg px-3 py-2 cursor-pointer select-none transition-colors ${
+                    form.work_type === value
+                      ? 'border-blue-500 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300 bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="work_type"
+                    value={value}
+                    checked={form.work_type === value}
+                    onChange={() => set('work_type', value)}
+                    className="hidden"
+                  />
+                  <div className={`text-sm font-medium ${form.work_type === value ? 'text-blue-700' : 'text-gray-700'}`}>
+                    {label}
+                  </div>
+                  <div className="text-[10px] text-gray-400 mt-0.5">{desc}</div>
+                </label>
+              ))}
+            </div>
+          </Field>
+
+          {/* 시행주체 */}
+          <Field label="시행주체 *">
+            <div className="flex gap-2">
+              {IMPLEMENTERS.map((imp) => (
+                <button
+                  key={imp}
+                  type="button"
+                  onClick={() => {
+                    set('implementer', imp);
+                    set('is_external', imp === '외부');
+                  }}
+                  className={`flex-1 py-1.5 text-sm rounded border font-medium transition-colors ${
+                    form.implementer === imp
+                      ? imp === '외부'
+                        ? 'bg-yellow-500 text-white border-yellow-500'
+                        : 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {imp}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          {/* 레거시 체크박스 (has_equipment, has_labor 보조정보) */}
           <div className="flex gap-6">
-            <CheckboxField label="장비작업" checked={form.has_equipment} onChange={(v) => set('has_equipment', v)} />
-            <CheckboxField label="인력작업" checked={form.has_labor} onChange={(v) => set('has_labor', v)} />
-            <CheckboxField label="외부공사" checked={form.is_external} onChange={(v) => set('is_external', v)} />
+            <CheckboxField label="장비 동원" checked={form.has_equipment} onChange={(v) => set('has_equipment', v)} />
+            <CheckboxField label="인력 동원" checked={form.has_labor} onChange={(v) => set('has_labor', v)} />
           </div>
 
           {/* 담당자 */}

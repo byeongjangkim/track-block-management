@@ -11,6 +11,9 @@ from app.models.route import Route
 from app.models.user import User
 from app.schemas.block_order import BlockOrderCreate, BlockOrderResponse, BlockOrderUpdate
 from app.services.auth_service import can_register_block_order, is_owner_or_superuser
+from app.api.v1.rail_reference import get_effective_track_info
+
+POWER_CUT_BLOCK_TYPE = "전차선단전"
 
 router = APIRouter(prefix="/block-orders", tags=["차단명령"])
 
@@ -53,10 +56,15 @@ def _legacy_route_id_from_rail_route(db: Session, rail_route_id: int | None) -> 
     )
 
 
+VALID_WORK_TYPES   = {'인력', '장비', '기계'}
+VALID_IMPLEMENTERS = {'철도공사', '철도공단', '외부'}
+
+
 def _prepare_block_order_data(data: dict, db: Session) -> dict:
     """
     철도 km과 KP는 같은 의미다.
     legacy km 입력은 KP로, 신규 KP 입력은 legacy km으로 복사해 기존 화면과 새 baseline 렌더링을 함께 살린다.
+    implementer 에서 is_external 을 자동 동기화한다.
     """
     route_id = data.get("route_id")
     rail_route_id = data.get("rail_route_id")
@@ -79,7 +87,36 @@ def _prepare_block_order_data(data: dict, db: Session) -> dict:
 
     if data.get("rail_route_id") is None and data.get("route_id") is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="노선을 찾을 수 없습니다")
+
+    # implementer → is_external 자동 동기화 (레거시 호환)
+    implementer = data.get("implementer")
+    if implementer is not None:
+        data["is_external"] = (implementer == "외부")
+
     return data
+
+
+def _assert_catenary(
+    db: Session,
+    rail_route_id: int | None,
+    block_type: str,
+    start_kp: float | None,
+    end_kp: float | None,
+) -> None:
+    """전차선단전 작업은 전차선이 있는 구간에만 등록 가능."""
+    if block_type != POWER_CUT_BLOCK_TYPE:
+        return
+    if rail_route_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="전차선단전 작업은 rail_route_id가 필요합니다",
+        )
+    _, has_catenary = get_effective_track_info(db, rail_route_id, start_kp, end_kp)
+    if not has_catenary:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="비전철 구간(전차선 없음)에는 전차선단전 작업을 등록할 수 없습니다",
+        )
 
 
 def _assert_can_register(
@@ -90,7 +127,11 @@ def _assert_can_register(
     field: str,
     db: Session,
     rail_route_id: int | None = None,
+    block_type: str = "",
 ) -> None:
+    # 전차선단전: 전차선 유무 사전 검증
+    _assert_catenary(db, rail_route_id, block_type, start_kp, end_kp)
+
     # 기지 노선(line_type='기지')은 legacy route 매핑이 없으므로 별도 처리:
     # org_admin 이상이면 자기 조직의 기지 작업으로 허용한다.
     if route_id is None and rail_route_id is not None:
@@ -124,7 +165,9 @@ def list_block_orders(
     date_to: date | None = None,
     organization_id: int | None = None,
     field: str | None = None,
-    is_external: bool | None = None,
+    work_type: str | None = None,         # 작업형태: 인력 | 장비 | 기계
+    implementer: str | None = None,       # 시행주체: 철도공사 | 철도공단 | 외부
+    is_external: bool | None = None,      # 레거시 (implementer='외부'로 대체)
     start_km_from: float | None = None,
     end_km_to: float | None = None,
     start_kp_from: float | None = None,
@@ -146,8 +189,13 @@ def list_block_orders(
         q = q.filter(BlockOrder.organization_id == organization_id)
     if field is not None:
         q = q.filter(BlockOrder.field == field)
-    if is_external is not None:
-        q = q.filter(BlockOrder.is_external == is_external)
+    if work_type is not None:
+        q = q.filter(BlockOrder.work_type == work_type)
+    if implementer is not None:
+        q = q.filter(BlockOrder.implementer == implementer)
+    elif is_external is not None:
+        # 레거시 파라미터: is_external → implementer='외부'/'철도공사' 로 변환
+        q = q.filter(BlockOrder.implementer == ("외부" if is_external else "철도공사"))
     if start_km_from is not None:
         q = q.filter(BlockOrder.start_kp >= start_km_from)
     if end_km_to is not None:
@@ -165,7 +213,7 @@ def create_block_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_org_admin),
 ):
-    """차단명령 등록 — org_admin 이상, 조직+분야+구간 검증"""
+    """차단명령 등록 — org_admin 이상, 조직+분야+구간+전차선 검증"""
     data = _prepare_block_order_data(body.model_dump(), db)
     _assert_can_register(
         current_user=current_user,
@@ -175,6 +223,7 @@ def create_block_order(
         field=data["field"],
         db=db,
         rail_route_id=data.get("rail_route_id"),
+        block_type=data.get("block_type", ""),
     )
 
     # organization_id: system_superuser는 body에서, org_admin은 자기 조직
@@ -240,7 +289,8 @@ def update_block_order(
     new_end = data.get("end_kp")
     new_field = body.field    if body.field     is not None else order.field
 
-    if {"route_id", "rail_route_id", "start_km", "end_km", "start_kp", "end_kp", "field"} & body_data.keys():
+    if {"route_id", "rail_route_id", "start_km", "end_km", "start_kp", "end_kp", "field", "block_type"} & body_data.keys():
+        new_block_type = body.block_type if body.block_type is not None else order.block_type
         _assert_can_register(
             current_user=current_user,
             route_id=data.get("route_id"),
@@ -249,6 +299,7 @@ def update_block_order(
             field=new_field,
             db=db,
             rail_route_id=data.get("rail_route_id"),
+            block_type=new_block_type,
         )
 
     for key, value in data.items():
@@ -273,8 +324,10 @@ class BulkBlockOrderItem(BaseModel):
     end_time: str                   # "HH:MM"
     field: str
     block_type: str
+    work_type: str | None = None      # 인력 | 장비 | 기계
     has_equipment: bool = False
     has_labor: bool = True
+    implementer: str = '철도공사'     # 철도공사 | 철도공단 | 외부
     is_external: bool = False
     doc_no: str | None = None
     dept_head: str | None = None
@@ -328,6 +381,7 @@ def bulk_create_block_orders(
                 field=data["field"],
                 db=db,
                 rail_route_id=data.get("rail_route_id"),
+                block_type=data.get("block_type", ""),
             )
 
             org_id = (
@@ -356,9 +410,11 @@ def bulk_create_block_orders(
                 end_time=_to_time(item.end_time),
                 field=item.field,
                 block_type=item.block_type,
+                work_type=item.work_type,
                 has_equipment=item.has_equipment,
                 has_labor=item.has_labor,
-                is_external=item.is_external,
+                implementer=item.implementer,
+                is_external=(item.implementer == '외부'),
                 doc_no=item.doc_no,
                 dept_head=item.dept_head,
                 dept_head_phone=item.dept_head_phone,

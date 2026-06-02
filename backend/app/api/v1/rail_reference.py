@@ -16,6 +16,9 @@ router = APIRouter(prefix="/rail-reference", tags=["기준정보"])
 VALID_DIRECTIONS = {"UP", "DOWN", "BOTH"}
 
 
+VALID_BORE_TYPES = {'복선', '단선_상선', '단선_하선'}
+
+
 class RailFacilityCreate(BaseModel):
     facility_code: str | None = None
     name: str
@@ -37,6 +40,8 @@ class RailFacilityCreate(BaseModel):
     entrance_lock_type: str | None = None
     nearest_station_id: int | None = None
     management_office_id: int | None = None
+    # 터널·교량 선로 적용 방식 ('복선'|'단선_상선'|'단선_하선')
+    bore_type: str = '복선'
     use_as_baseline_anchor: bool = False
     is_active: bool = True
     note: str | None = None
@@ -63,6 +68,7 @@ class RailFacilityUpdate(BaseModel):
     entrance_lock_type: str | None = None
     nearest_station_id: int | None = None
     management_office_id: int | None = None
+    bore_type: str | None = None
     use_as_baseline_anchor: bool | None = None
     is_active: bool | None = None
     note: str | None = None
@@ -140,6 +146,14 @@ def _validate_facility_data(
     if kp_end is not None and float(kp_end) < float(kp_start):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="종료 KP는 시작 KP보다 작을 수 없습니다")
 
+    # bore_type 검증 (터널·교량에만 의미 있으나 모든 시설물에 허용)
+    bore_type = merged.get("bore_type", "복선")
+    if bore_type not in VALID_BORE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="bore_type은 '복선', '단선_상선', '단선_하선' 중 하나여야 합니다",
+        )
+
     direction = merged.get("direction")
     if direction not in (None, "") and direction not in VALID_DIRECTIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="방향은 UP, DOWN, BOTH 중 하나여야 합니다")
@@ -197,6 +211,7 @@ def _facility_response(db: Session, facility_id: int) -> dict:
                     rf.management_office_id,
                     mo.region_name AS management_region_name,
                     mo.office_name AS management_office_name,
+                    rf.bore_type,
                     rf.use_as_baseline_anchor,
                     rf.is_active,
                     rf.note,
@@ -218,6 +233,7 @@ def _facility_response(db: Session, facility_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="시설물을 찾을 수 없습니다")
     item = dict(row)
+    item["bore_type"] = item.get("bore_type") or "복선"
     item["use_as_baseline_anchor"] = bool(item["use_as_baseline_anchor"])
     item["is_active"] = bool(item["is_active"])
     if item["is_paved"] is not None:
@@ -356,6 +372,7 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
                     rf.lon,
                     rf.lat_end,
                     rf.lon_end,
+                    rf.bore_type,
                     rf.use_as_baseline_anchor,
                     rf.is_active,
                     c.geometry_type
@@ -651,6 +668,8 @@ def list_reference_routes(
                     rr.is_active,
                     rr.source_file,
                     rr.imported_at,
+                    rr.default_track_count,
+                    rr.default_has_catenary,
                     COALESCE(sc.station_point_count, 0) AS station_point_count,
                     COALESCE(bc.baseline_point_count, 0) AS baseline_point_count,
                     COALESCE(bc.render_anchor_count, 0) AS render_anchor_count,
@@ -674,7 +693,9 @@ def list_reference_routes(
     items = []
     for row in rows:
         item = dict(row)
-        item["is_active"] = bool(item["is_active"])
+        item["is_active"]             = bool(item["is_active"])
+        item["default_has_catenary"]  = bool(item.get("default_has_catenary", True))
+        item["default_track_count"]   = int(item.get("default_track_count", 2))
         items.append(item)
     return items
 
@@ -774,6 +795,7 @@ def list_rail_facilities(
                     rf.management_office_id,
                     mo.region_name AS management_region_name,
                     mo.office_name AS management_office_name,
+                    rf.bore_type,
                     rf.use_as_baseline_anchor,
                     rf.is_active,
                     rf.note,
@@ -800,6 +822,7 @@ def list_rail_facilities(
     items = []
     for row in rows:
         item = dict(row)
+        item["bore_type"] = item.get("bore_type") or "복선"
         item["use_as_baseline_anchor"] = bool(item["use_as_baseline_anchor"])
         item["is_active"] = bool(item["is_active"])
         if item["is_paved"] is not None:
@@ -845,6 +868,7 @@ def create_rail_facility(
                 entrance_lock_type,
                 nearest_station_id,
                 management_office_id,
+                bore_type,
                 use_as_baseline_anchor,
                 is_active,
                 note,
@@ -872,6 +896,7 @@ def create_rail_facility(
                 :entrance_lock_type,
                 :nearest_station_id,
                 :management_office_id,
+                :bore_type,
                 :use_as_baseline_anchor,
                 :is_active,
                 :note,
@@ -1113,14 +1138,14 @@ async def bulk_upload_facilities(
                         direction, section_from, section_to, address,
                         road_width_m, is_paved, bus_accessible,
                         entrance_passage_type, entrance_lock_type,
-                        use_as_baseline_anchor, is_active, note, updated_at
+                        bore_type, use_as_baseline_anchor, is_active, note, updated_at
                     ) VALUES (
                         :rail_route_id, :facility_code, :name, :classification_id,
                         :kp_start, :kp_end, :lat, :lon, :lat_end, :lon_end,
                         :direction, :section_from, :section_to, :address,
                         :road_width_m, :is_paved, :bus_accessible,
                         :entrance_passage_type, :entrance_lock_type,
-                        :use_as_baseline_anchor, :is_active, :note, CURRENT_TIMESTAMP
+                        :bore_type, :use_as_baseline_anchor, :is_active, :note, CURRENT_TIMESTAMP
                     )
                 """),
                 {
@@ -1143,14 +1168,257 @@ async def bulk_upload_facilities(
                     "bus_accessible": parse_bool(row.get("bus_accessible")),
                     "entrance_passage_type": (row.get("entrance_passage_type") or "").strip() or None,
                     "entrance_lock_type": (row.get("entrance_lock_type") or "").strip() or None,
+                    "bore_type": (row.get("bore_type") or "복선").strip() or "복선",
                     "use_as_baseline_anchor": use_as_baseline_anchor,
                     "is_active": is_active,
                     "note": (row.get("note") or "").strip() or None,
                 },
             )
+            facility_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
+            if use_as_baseline_anchor and is_active and lat is not None:
+                _sync_facility_baseline_points(db, facility_id)
             success_count += 1
         except Exception as exc:
             errors.append(f"행 {row_num}: DB 저장 오류 — {exc}")
 
     db.commit()
+    if success_count > 0:
+        _rebuild_computed_geometry_route(db, rail_route_id)
+        db.commit()
     return {"success": success_count, "errors": errors}
+
+
+# ── 노선 선로수·전차선 유무 (rail_track_sections) CRUD ────────────────────────
+
+VALID_TRACK_COUNTS = {1, 2, 4, 6}
+
+
+class TrackSectionCreate(BaseModel):
+    start_kp:      float
+    end_kp:        float
+    track_count:   int   = 2   # 1/2/4/6
+    has_catenary:  bool  = True
+    note:          str | None = None
+
+
+class TrackSectionUpdate(BaseModel):
+    start_kp:      float | None = None
+    end_kp:        float | None = None
+    track_count:   int   | None = None
+    has_catenary:  bool  | None = None
+    note:          str   | None = None
+
+
+class RouteDefaultUpdate(BaseModel):
+    default_track_count:   int  | None = None   # 1/2/4/6
+    default_has_catenary:  bool | None = None
+
+
+def _get_route_defaults(db: Session, rail_route_id: int) -> dict:
+    row = db.execute(
+        text("SELECT default_track_count, default_has_catenary FROM rail_routes WHERE id = :id"),
+        {"id": rail_route_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="노선을 찾을 수 없습니다")
+    return dict(row)
+
+
+def get_effective_track_info(
+    db: Session, rail_route_id: int, kp_start: float | None, kp_end: float | None
+) -> tuple[int, bool]:
+    """특정 KP 구간의 유효 선로 수·전차선 유무를 반환.
+
+    rail_track_sections에 해당 구간이 있으면 그 값을 사용하고,
+    없으면 rail_routes 기본값을 반환한다.
+    여러 구간에 걸쳐 있으면 가장 엄격한 값(최소 track_count, has_catenary AND)을 반환.
+    """
+    defaults = _get_route_defaults(db, rail_route_id)
+
+    if kp_start is None or kp_end is None:
+        return defaults["default_track_count"], bool(defaults["default_has_catenary"])
+
+    lo, hi = min(kp_start, kp_end), max(kp_start, kp_end)
+    sections = db.execute(
+        text("""
+            SELECT track_count, has_catenary
+            FROM rail_track_sections
+            WHERE rail_route_id = :rid
+              AND start_kp < :hi AND end_kp > :lo
+        """),
+        {"rid": rail_route_id, "lo": lo, "hi": hi},
+    ).fetchall()
+
+    if not sections:
+        return defaults["default_track_count"], bool(defaults["default_has_catenary"])
+
+    min_track = min(s.track_count for s in sections)
+    all_catenary = all(bool(s.has_catenary) for s in sections)
+    return min_track, all_catenary
+
+
+@router.get("/routes/{rail_route_id}/defaults")
+def get_route_defaults(
+    rail_route_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """노선 기본 선로수·전차선 유무 조회"""
+    _ensure_rail_route(db, rail_route_id)
+    defaults = _get_route_defaults(db, rail_route_id)
+    return {
+        "rail_route_id":       rail_route_id,
+        "default_track_count": defaults["default_track_count"],
+        "default_has_catenary": bool(defaults["default_has_catenary"]),
+    }
+
+
+@router.patch("/routes/{rail_route_id}/defaults")
+def update_route_defaults(
+    rail_route_id: int,
+    body: RouteDefaultUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """노선 기본 선로수·전차선 유무 수정"""
+    _ensure_rail_route(db, rail_route_id)
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        return _get_route_defaults(db, rail_route_id)
+    if "default_track_count" in updates and updates["default_track_count"] not in VALID_TRACK_COUNTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="선로 수는 1, 2, 4, 6 중 하나여야 합니다",
+        )
+    set_clauses = ", ".join(f"{k} = :{k}" for k in updates)
+    db.execute(
+        text(f"UPDATE rail_routes SET {set_clauses} WHERE id = :rail_route_id"),
+        {**updates, "rail_route_id": rail_route_id},
+    )
+    db.commit()
+    return _get_route_defaults(db, rail_route_id)
+
+
+@router.get("/routes/{rail_route_id}/track-sections")
+def list_track_sections(
+    rail_route_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """노선 구간별 선로수·전차선 예외 목록"""
+    _ensure_rail_route(db, rail_route_id)
+    rows = db.execute(
+        text("""
+            SELECT id, rail_route_id, start_kp, end_kp,
+                   track_count, has_catenary, note, created_at, updated_at
+            FROM rail_track_sections
+            WHERE rail_route_id = :rid
+            ORDER BY start_kp
+        """),
+        {"rid": rail_route_id},
+    ).mappings().all()
+    return [
+        {**dict(r), "has_catenary": bool(r["has_catenary"])}
+        for r in rows
+    ]
+
+
+@router.post("/routes/{rail_route_id}/track-sections", status_code=status.HTTP_201_CREATED)
+def create_track_section(
+    rail_route_id: int,
+    body: TrackSectionCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """노선 구간별 선로수·전차선 예외 등록"""
+    _ensure_rail_route(db, rail_route_id)
+    if body.track_count not in VALID_TRACK_COUNTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="선로 수는 1, 2, 4, 6 중 하나여야 합니다",
+        )
+    if body.end_kp <= body.start_kp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="종료 KP는 시작 KP보다 커야 합니다",
+        )
+    db.execute(
+        text("""
+            INSERT INTO rail_track_sections
+                (rail_route_id, start_kp, end_kp, track_count, has_catenary, note, updated_at)
+            VALUES
+                (:rail_route_id, :start_kp, :end_kp, :track_count, :has_catenary, :note, CURRENT_TIMESTAMP)
+        """),
+        {
+            "rail_route_id": rail_route_id,
+            "start_kp":      body.start_kp,
+            "end_kp":        body.end_kp,
+            "track_count":   body.track_count,
+            "has_catenary":  body.has_catenary,
+            "note":          body.note,
+        },
+    )
+    new_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
+    db.commit()
+    row = db.execute(
+        text("SELECT * FROM rail_track_sections WHERE id = :id"), {"id": new_id}
+    ).mappings().first()
+    return {**dict(row), "has_catenary": bool(row["has_catenary"])}
+
+
+@router.put("/track-sections/{section_id}")
+def update_track_section(
+    section_id: int,
+    body: TrackSectionUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """구간별 선로수·전차선 예외 수정"""
+    existing = db.execute(
+        text("SELECT * FROM rail_track_sections WHERE id = :id"), {"id": section_id}
+    ).mappings().first()
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="구간 정보를 찾을 수 없습니다")
+
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        return {**dict(existing), "has_catenary": bool(existing["has_catenary"])}
+
+    if "track_count" in updates and updates["track_count"] not in VALID_TRACK_COUNTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="선로 수는 1, 2, 4, 6 중 하나여야 합니다",
+        )
+    new_start = updates.get("start_kp", existing["start_kp"])
+    new_end   = updates.get("end_kp",   existing["end_kp"])
+    if new_end <= new_start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="종료 KP는 시작 KP보다 커야 합니다",
+        )
+    set_clauses = ", ".join(f"{k} = :{k}" for k in updates) + ", updated_at = CURRENT_TIMESTAMP"
+    db.execute(
+        text(f"UPDATE rail_track_sections SET {set_clauses} WHERE id = :id"),
+        {**updates, "id": section_id},
+    )
+    db.commit()
+    row = db.execute(
+        text("SELECT * FROM rail_track_sections WHERE id = :id"), {"id": section_id}
+    ).mappings().first()
+    return {**dict(row), "has_catenary": bool(row["has_catenary"])}
+
+
+@router.delete("/track-sections/{section_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_track_section(
+    section_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """구간별 선로수·전차선 예외 삭제"""
+    existing = db.execute(
+        text("SELECT id FROM rail_track_sections WHERE id = :id"), {"id": section_id}
+    ).first()
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="구간 정보를 찾을 수 없습니다")
+    db.execute(text("DELETE FROM rail_track_sections WHERE id = :id"), {"id": section_id})
+    db.commit()

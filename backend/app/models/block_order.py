@@ -51,9 +51,13 @@ class BlockOrder(Base):
     # 분류
     field: Mapped[str] = mapped_column(String(30), nullable=False)       # 분야: '시설' | '전기' | '건축'
     block_type: Mapped[str] = mapped_column(String(30), nullable=False)  # 차단종류
-    has_equipment: Mapped[bool] = mapped_column(Boolean, default=False)  # 장비작업 여부
-    has_labor: Mapped[bool] = mapped_column(Boolean, default=True)       # 인력작업 여부
-    is_external: Mapped[bool] = mapped_column(Boolean, default=False)    # 외부(True)/내부(False)
+    # 작업형태: '인력'(밀차 등 인력·공기구류) | '장비'(보선장비·전철장비 등 철도차량) | '기계'(건설기계관리법 상 건설기계)
+    work_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    has_equipment: Mapped[bool] = mapped_column(Boolean, default=False)  # (레거시) 장비작업 여부
+    has_labor: Mapped[bool] = mapped_column(Boolean, default=True)       # (레거시) 인력작업 여부
+    # 시행주체: '철도공사' | '철도공단' | '외부'
+    implementer: Mapped[str] = mapped_column(String(20), nullable=False, default='철도공사')
+    is_external: Mapped[bool] = mapped_column(Boolean, default=False)    # (레거시) 외부 여부 — implementer='외부' 로 대체
 
     # 문서
     doc_no: Mapped[str | None] = mapped_column(String(30))         # 문서번호 (작업관리센터TF-XXXXXX)

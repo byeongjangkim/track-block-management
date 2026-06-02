@@ -73,8 +73,10 @@ export interface BlockOrder {
   end_time: string;
   field: string;
   block_type: string;
+  work_type: string | null;   // 인력 | 장비 | 기계
   has_equipment: boolean;
   has_labor: boolean;
+  implementer: string;        // 철도공사 | 철도공단 | 외부
   is_external: boolean;
   doc_no: string | null;
   dept_head: string | null;
@@ -116,8 +118,10 @@ export interface BlockOrderCreate {
   end_time: string;
   field: string;
   block_type: string;
+  work_type?: string | null;
   has_equipment: boolean;
   has_labor: boolean;
+  implementer?: string;
   is_external: boolean;
   doc_no?: string;
   dept_head?: string;
@@ -251,8 +255,10 @@ export interface BulkBlockOrderItem {
   end_time: string;     // HH:MM
   field: string;
   block_type: string;
+  work_type?: string | null;
   has_equipment: boolean;
   has_labor: boolean;
+  implementer?: string;
   is_external: boolean;
   doc_no?: string | null;
   dept_head?: string | null;

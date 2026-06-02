@@ -37,6 +37,7 @@ export interface RailReferenceRoute {
   id: number;
   korail_route_code: string;
   name: string;
+  line_type: string;
   route_category: string | null;
   start_station_name: string | null;
   end_station_name: string | null;
@@ -56,6 +57,58 @@ export interface RailReferenceRoute {
   render_anchor_count: number;
   baseline_kp_min: number | null;
   baseline_kp_max: number | null;
+  default_track_count: number;
+  default_has_catenary: boolean;
+}
+
+// ── 선로 구성·전차선 관련 타입 ──────────────────────────────────────────────
+
+export interface TrackSection {
+  id: number;
+  rail_route_id: number;
+  start_kp: number;
+  end_kp: number;
+  track_count: number;    // 1=단선 | 2=복선 | 4=복복선 | 6=삼복선
+  has_catenary: boolean;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TrackSectionInput {
+  start_kp: number;
+  end_kp: number;
+  track_count: number;
+  has_catenary: boolean;
+  note?: string | null;
+}
+
+export interface RouteDefaultsInput {
+  default_track_count?: number;
+  default_has_catenary?: boolean;
+}
+
+export async function fetchTrackSections(routeId: number): Promise<TrackSection[]> {
+  const res = await api.get<TrackSection[]>(`/rail-reference/routes/${routeId}/track-sections`);
+  return res.data;
+}
+
+export async function createTrackSection(routeId: number, data: TrackSectionInput): Promise<TrackSection> {
+  const res = await api.post<TrackSection>(`/rail-reference/routes/${routeId}/track-sections`, data);
+  return res.data;
+}
+
+export async function updateTrackSection(sectionId: number, data: Partial<TrackSectionInput>): Promise<TrackSection> {
+  const res = await api.put<TrackSection>(`/rail-reference/track-sections/${sectionId}`, data);
+  return res.data;
+}
+
+export async function deleteTrackSection(sectionId: number): Promise<void> {
+  await api.delete(`/rail-reference/track-sections/${sectionId}`);
+}
+
+export async function updateRouteDefaults(routeId: number, data: RouteDefaultsInput): Promise<void> {
+  await api.patch(`/rail-reference/routes/${routeId}/defaults`, data);
 }
 
 export interface RailRouteStationPoint {
@@ -121,6 +174,7 @@ export interface RailFacility {
   management_office_id: number | null;
   management_region_name: string | null;
   management_office_name: string | null;
+  bore_type: string;           // 복선 | 단선_상선 | 단선_하선
   use_as_baseline_anchor: boolean;
   is_active: boolean;
   note: string | null;
@@ -149,6 +203,7 @@ export interface RailFacilityInput {
   entrance_lock_type?: string | null;
   nearest_station_id?: number | null;
   management_office_id?: number | null;
+  bore_type?: string;
   use_as_baseline_anchor?: boolean;
   is_active?: boolean;
   note?: string | null;

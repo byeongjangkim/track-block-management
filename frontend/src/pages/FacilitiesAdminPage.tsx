@@ -37,6 +37,7 @@ interface EditRow {
   bus_accessible: boolean | null;
   entrance_passage_type: string;
   entrance_lock_type: string;
+  bore_type: string;           // 복선 | 단선_상선 | 단선_하선
   use_as_baseline_anchor: boolean;
   is_active: boolean;
   note: string;
@@ -88,6 +89,7 @@ function emptyRow(classifications: RailFacilityClassification[]): EditRow {
     bus_accessible: null,
     entrance_passage_type: '',
     entrance_lock_type: '',
+    bore_type: '복선',
     use_as_baseline_anchor: false,
     is_active: true,
     note: '',
@@ -114,6 +116,7 @@ function rowFromFacility(facility: RailFacility): EditRow {
     bus_accessible: facility.bus_accessible,
     entrance_passage_type: facility.entrance_passage_type ?? '',
     entrance_lock_type: facility.entrance_lock_type ?? '',
+    bore_type: facility.bore_type ?? '복선',
     use_as_baseline_anchor: facility.use_as_baseline_anchor,
     is_active: facility.is_active,
     note: facility.note ?? '',
@@ -182,6 +185,7 @@ function buildPayload(row: EditRow, classification: RailFacilityClassification |
     bus_accessible: row.bus_accessible,
     entrance_passage_type: row.entrance_passage_type.trim() || null,
     entrance_lock_type: row.entrance_lock_type.trim() || null,
+    bore_type: row.bore_type || '복선',
     use_as_baseline_anchor: row.use_as_baseline_anchor,
     is_active: row.is_active,
     note: row.note.trim() || null,
@@ -595,7 +599,10 @@ function EditRow({
     ? undefined
     : classifications.find((classification) => classification.id === row.classification_id);
   const isLinear = selectedClassification?.geometry_type === 'linear';
-  const isGate = selectedClassification?.sub_category === '선로출입문';
+  const isGate    = selectedClassification?.sub_category === '선로출입문';
+  const isTunnel  = isLinear && selectedClassification?.sub_category === '터널';
+  const isBridge  = isLinear && (selectedClassification?.sub_category === '교량' || selectedClassification?.sub_category === '과선교');
+  const needsBoreType = isTunnel || isBridge;
 
   return (
     <tr className="border-b bg-blue-50">
@@ -756,6 +763,20 @@ function EditRow({
             비고
             <input value={row.note} onChange={(event) => onChange('note', event.target.value)} className={`${inputCls} mt-1`} />
           </label>
+          {needsBoreType && (
+            <label className="text-xs text-gray-500 xl:col-span-2">
+              선로 적용 방식
+              <select
+                value={row.bore_type}
+                onChange={(e) => onChange('bore_type', e.target.value)}
+                className={`${inputCls} mt-1`}
+              >
+                <option value="복선">복선 (상·하선 한 구조물)</option>
+                <option value="단선_상선">단선 — 상선 전용</option>
+                <option value="단선_하선">단선 — 하선 전용</option>
+              </select>
+            </label>
+          )}
           <label className="h-8 flex items-center gap-2 text-xs text-gray-600">
             <input
               type="checkbox"

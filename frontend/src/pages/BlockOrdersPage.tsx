@@ -11,7 +11,7 @@ import PdfImportModal from '../components/block/PdfImportModal';
 
 function formatTime(t: string) { return t.slice(0, 5); }
 
-const DIRECTION_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선' };
+const DIRECTION_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선', BOTH: '전체' };
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function plusDays(n: number) {
@@ -36,6 +36,7 @@ export default function BlockOrdersPage() {
   const [inputRouteId, setInputRouteId]   = useState<number | ''>('');
   const [inputOrgFilter, setInputOrgFilter] = useState<number | ''>('');
   const [inputField, setInputField]       = useState('');
+  const [inputDocNo, setInputDocNo]       = useState('');   // 문서번호 필터
   const [inputDateFrom, setInputDateFrom] = useState(DEFAULT_DATE_FROM);
   const [inputDateTo, setInputDateTo]     = useState(DEFAULT_DATE_TO);
 
@@ -43,6 +44,7 @@ export default function BlockOrdersPage() {
   const [appliedRouteId, setAppliedRouteId]     = useState<number | ''>('');
   const [appliedOrgFilter, setAppliedOrgFilter] = useState<number | ''>('');
   const [appliedField, setAppliedField]         = useState('');
+  const [appliedDocNo, setAppliedDocNo]         = useState('');
   const [appliedDateFrom, setAppliedDateFrom]   = useState(DEFAULT_DATE_FROM);
   const [appliedDateTo, setAppliedDateTo]       = useState(DEFAULT_DATE_TO);
 
@@ -83,10 +85,16 @@ export default function BlockOrdersPage() {
   const orgMap   = Object.fromEntries(organizations.map((o) => [o.id, o.name]));
 
   const filteredOrders = useMemo(() => {
-    if (filterDangerLevel === null) return orders;
-    if (filterDangerLevel === 'none') return orders.filter((o) => o.danger_level === null);
-    return orders.filter((o) => o.danger_level === filterDangerLevel);
-  }, [orders, filterDangerLevel]);
+    let result = orders;
+    // 문서번호 클라이언트 필터
+    if (appliedDocNo.trim()) {
+      const q = appliedDocNo.trim().toLowerCase();
+      result = result.filter((o) => o.doc_no?.toLowerCase().includes(q));
+    }
+    if (filterDangerLevel === null) return result;
+    if (filterDangerLevel === 'none') return result.filter((o) => o.danger_level === null);
+    return result.filter((o) => o.danger_level === filterDangerLevel);
+  }, [orders, filterDangerLevel, appliedDocNo]);
 
   function canEdit(order: BlockOrder) {
     if (isSuperuser) return true;
@@ -104,6 +112,7 @@ export default function BlockOrdersPage() {
     setAppliedRouteId(inputRouteId);
     setAppliedOrgFilter(inputOrgFilter);
     setAppliedField(inputField);
+    setAppliedDocNo(inputDocNo);
     setAppliedDateFrom(inputDateFrom);
     setAppliedDateTo(inputDateTo);
   }
@@ -112,11 +121,13 @@ export default function BlockOrdersPage() {
     setInputRouteId('');
     setInputOrgFilter('');
     setInputField('');
+    setInputDocNo('');
     setInputDateFrom(DEFAULT_DATE_FROM);
     setInputDateTo(DEFAULT_DATE_TO);
     setAppliedRouteId('');
     setAppliedOrgFilter('');
     setAppliedField('');
+    setAppliedDocNo('');
     setAppliedDateFrom(DEFAULT_DATE_FROM);
     setAppliedDateTo(DEFAULT_DATE_TO);
     setFilterDangerLevel(null);
@@ -126,7 +137,7 @@ export default function BlockOrdersPage() {
   function openEdit(o: BlockOrder) { setEditing(o); setShowForm(true); }
   function closeForm() { setShowForm(false); setEditing(undefined); }
 
-  const colCount = isSuperuser ? 14 : 13;
+  const colCount = isSuperuser ? 15 : 14;
 
   const SELECT_CLS = 'h-9 w-32 border rounded-lg pl-3 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white appearance-none cursor-pointer';
   const DATE_CLS   = 'h-9 border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white';
@@ -189,6 +200,17 @@ export default function BlockOrdersPage() {
           </select>
           <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs">▾</span>
         </div>
+
+        {/* 문서번호 */}
+        <span className={LABEL_CLS}>문서번호</span>
+        <input
+          type="text"
+          value={inputDocNo}
+          onChange={(e) => setInputDocNo(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          placeholder="예: 053479"
+          className="h-9 w-28 border rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+        />
 
         {/* 기간 */}
         <span className={LABEL_CLS}>기간</span>
@@ -294,7 +316,7 @@ export default function BlockOrdersPage() {
               {[
                 ...(isSuperuser ? ['소속 조직'] : []),
                 '노선', '방향', '구간 (km)', '작업일자', '시간', '분야',
-                '차단종류', '위험등급', '작업책임자', '안전관리자', '외부', '문서', '작업',
+                '차단종류', '작업형태', '시행주체', '위험등급', '작업책임자', '안전관리자', '문서', '작업',
               ].map((h) => (
                 <th
                   key={h}
@@ -317,7 +339,7 @@ export default function BlockOrdersPage() {
                 <tr
                   key={o.id}
                   className="border-b hover:bg-blue-50 transition-colors cursor-pointer"
-                  onClick={() => navigate(`/block-map?date=${o.work_date}`)}
+                  onClick={() => navigate(`/block-map?date=${o.work_date}&block_id=${o.id}`)}
                 >
                   {isSuperuser && (
                     <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-500">
@@ -347,6 +369,26 @@ export default function BlockOrdersPage() {
                     <FieldBadge field={o.field} />
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">{o.block_type}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {o.work_type ? (
+                      <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                        o.work_type === '인력' ? 'bg-slate-100 text-slate-700'
+                        : o.work_type === '장비' ? 'bg-blue-100 text-blue-700'
+                        : 'bg-orange-100 text-orange-700'
+                      }`}>
+                        {o.work_type}
+                      </span>
+                    ) : <span className="text-gray-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                      o.implementer === '외부' ? 'bg-yellow-100 text-yellow-700'
+                      : o.implementer === '철도공단' ? 'bg-purple-100 text-purple-700'
+                      : 'bg-gray-100 text-gray-600'
+                    }`}>
+                      {o.implementer || '철도공사'}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-center">
                     {o.danger_level ? (
                       <span
@@ -363,11 +405,6 @@ export default function BlockOrdersPage() {
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">{o.work_supervisor}</td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">{o.safety_manager}</td>
-                  <td className="px-3 py-2 text-center">
-                    {o.is_external ? (
-                      <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">외부</span>
-                    ) : '-'}
-                  </td>
                   <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
                     {o.document_path ? (
                       <a

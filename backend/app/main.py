@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import admin, auth, block_orders, documents, facilities, map, organizations, rail_reference, routes, stats, users
+from app.api.v1 import admin, auth, block_orders, documents, facilities, map, organizations, rail_reference, routes, settings, stats, users
 
 app = FastAPI(
     title="선로차단작업 관리 API",
@@ -29,6 +29,7 @@ app.include_router(facilities.router,    prefix=PREFIX)
 app.include_router(block_orders.router,  prefix=PREFIX)
 app.include_router(documents.router,     prefix=PREFIX)
 app.include_router(stats.router,         prefix=PREFIX)
+app.include_router(settings.router,      prefix=PREFIX)
 app.include_router(admin.router,         prefix=PREFIX)
 app.include_router(map.router,           prefix=PREFIX)
 app.include_router(rail_reference.router, prefix=PREFIX)
