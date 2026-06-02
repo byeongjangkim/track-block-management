@@ -19,7 +19,11 @@ class BlockOrder(Base):
     # 노선·위치
     route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
     rail_route_id: Mapped[int | None] = mapped_column(ForeignKey("rail_routes.id"), nullable=True)
-    direction: Mapped[str] = mapped_column(String(4), nullable=False)     # "UP" / "DOWN"
+    # 차단 선로 목록 (JSON 배열 텍스트)
+    # 복선(2):  ["상선"] | ["하선"] | ["상선","하선"]
+    # 2복선(4): ["상1"] | ["상2"] | ["하1"] | ["하2"] | 조합
+    # 3복선(6): ["상1"] | ["상2"] | ["상3"] | ["하1"] | ["하2"] | ["하3"] | 조합
+    tracks: Mapped[str] = mapped_column(Text, nullable=False, default='["상선"]')
     # 철도 km과 KP는 같은 의미로 사용한다. start_km/end_km은 legacy 호환 컬럼이고,
     # 신규 렌더링/보간은 start_kp/end_kp를 기준으로 한다.
     start_km: Mapped[float | None] = mapped_column(Float, nullable=True)  # 전차선 단전 등 km 없는 경우 NULL

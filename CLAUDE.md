@@ -96,10 +96,10 @@ curl -m 5 http://localhost:7000/api/health
 | `src/components/map/RailwayMap.tsx` | D3.js 전국 노선도 |
 | `src/components/common/Layout.tsx` | 헤더 네비게이션 (역할별 메뉴) |
 | `src/store/authStore.ts` | Zustand 로그인 상태 |
-| `src/store/settingsStore.ts` | Zustand 시스템 설정 색상 (앱 시작 시 DB 로드) |
-| `src/api/map.ts` | geometry, org-boundaries, block-segments |
+| `src/store/settingsStore.ts` | Zustand 시스템 설정 (색상 + `stationPointsMode`) |
+| `src/api/map.ts` | geometry(`station_mode` 파라미터), org-boundaries, block-segments |
 | `src/api/settings.ts` | 시스템 설정 CRUD API |
-| `src/pages/SystemSettingsPage.tsx` | 색상 설정 관리 페이지 (superuser) |
+| `src/pages/SystemSettingsPage.tsx` | 색상 + 지도 설정 관리 페이지 (superuser) |
 
 ### 메뉴 구조
 
@@ -172,13 +172,37 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 | 30 | 14px | -7px | +7px |
 
 - `trackHalfGapPx(zoomK)` 함수가 로그 보간으로 계산
-- 선로차단선은 `laneOffsetSvg()` 가 동일 기준 사용 → 선로 위에 정확히 겹침
+- 선로차단선은 `blockSegmentOffsetSvg()` 가 선로 이름 → 물리 위치 변환 → 선로 위에 정확히 겹침
+
+### 차단구간 선 두께 (zoom 반응)
+
+`laneWidthPx(k) = min(10, max(3, 3 + log₂(k)))`  
+zoom 증가에 따라 로그적으로 두꺼워짐:
+
+| zoom | 두께 |
+|---|---|
+| 1.5 | ~3.6px |
+| 4 | 5px |
+| 9 | ~6.2px |
+| 20 | ~7.3px |
+
+### 다복선(2복선·3복선) 선로 간격 — LOD 확장
+
+- zoom ≤ 5.8: 압축 모드 — 복선과 동일 스팬 (지도 산만함 방지)
+- zoom 5.8→20: 선형 보간으로 점진적 확장
+- zoom ≥ 20: **완전 확장** — 선로 간 간격 = 복선 상하선 간격(2×half)과 동일
+
+| zoom | 복선 스팬 | 2복선 스팬 | 3복선 스팬 |
+|---|---|---|---|
+| ≤ 5.8 | 기준 | 동일 | 동일 |
+| ~10 | 기준 | 30% 확장 | 30% 확장 |
+| ≥ 20 | 기준 | **3× 기준** | **5× 기준** |
 
 ### 차단 유형별 시각화
 
 | block_type | 유형 | 렌더링 |
 |---|---|---|
-| 단선차단, 복선차단 | 선로차단 | 앰버-노란, 해당 선로 위, 실선 두꺼움 |
+| **선로차단** | 선로차단 | 앰버-노란, 해당 선로(tracks) 위, 실선 두꺼움 |
 | 임시완속, 속도제한 | 선로차단(부분) | 앰버-노란, 장대시 대시 |
 | 작업구간설정 | 선로변 작업 | 앰버-노란, 단대시 대시 |
 | 전차선단전 | 전차선 차단 | **녹색, 노선 위 직접 표시** (별도 catenary-cuts 레이어) |
@@ -187,17 +211,19 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 
 ### 분야별 다중 레인
 
-같은 방향에 여러 분야 차단이 겹치면 레인을 나눔:
+같은 선로에 여러 분야 차단이 겹치면 레인을 나눔:
 - 우선순위: 시설(0) → 전기(1) → 건축(2)
-- 방향 구분: 색상 아님, **위치로 구분** (복선 좌=상선, 우=하선)
+- 선로 구분: `tracks` 필드의 선로 이름으로 물리 위치 결정 (복선 좌=상선, 우=하선)
 
 ### 줌 배율별 레이어 전환
 
 | zoom | 표시 |
 |---|---|
-| < 1.5 | 노선별 집계 배지 (건수 원) |
+| < 1.5 | 노선별 집계 배지 (건수 원) — **클릭 시 zoom=2.5로 fly-to** |
 | 1.5 ~ 4 | 개별 레인 선분 + 집합 밴드 |
 | ≥ 4 | 개별 레인 선분 + ◆ 마커 (분야 약자) |
+
+**배지 클릭**: D3 이벤트에서 `zoomRef.current.transform`으로 zoom=2.5, 배지 중심 700ms 애니메이션
 
 ### 시설물 표시 기준
 
@@ -302,6 +328,21 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 | `'C'` | C 일반 | `#10b981` (녹색) |
 | `null` | 미지정 | `#6b7280` (회색) |
 
+### 선로(tracks) 명명 규칙
+
+| default_track_count | 선로 이름 |
+|---|---|
+| 1 (단선) | 상선 |
+| 2 (복선) | 상선, 하선 |
+| 4 (2복선) | 상1, 상2, 하1, 하2 |
+| 6 (3복선) | 상1, 상2, 상3, 하1, 하2, 하3 |
+
+- `block_orders.tracks`: JSON 배열 텍스트 `'["상선"]'`, `'["상선","하선"]'`
+- 복수 선택 가능 (예: 상선+하선 동시 차단, 상1+상2 등)
+- `direction` 컬럼은 tc05 마이그레이션에서 삭제 → `tracks`로 대체
+- `block_type`: 단선차단/복선차단 → **선로차단**으로 통합
+- 기지(기지 노선) 선로는 추후 구현 예정
+
 ### 차단작업 분류
 
 **작업형태 (work_type):**
@@ -335,7 +376,7 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 ### 철도 좌표계
 
 - 기준: **노선코드 + 거리정(KP/km)**, 단위 Float
-- 방향: `UP` (상선) / `DOWN` (하선) / `BOTH` (기지 전체)
+- 선로: `tracks` JSON 배열 (예: `["상선"]`, `["상1","하1"]`) — tc05 이후 `direction` 컬럼 대체
 - `km`과 `KP`는 같은 의미
 
 ### 차단명령 관리 원칙
@@ -354,7 +395,7 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 ### 연속 작업 자동 감지
 
 - 선택된 건의 ±45일 범위 로드 (확장 쿼리, 선택 시만 실행)
-- 같은 노선+방향+구간+분야가 연속 날짜에 등록된 경우 "시리즈" 감지
+- 같은 노선+tracks+구간+분야가 연속 날짜에 등록된 경우 "시리즈" 감지
 - 상세 패널: "📅 연속 작업 YYYY-MM-DD ~ YYYY-MM-DD  [N일]" 표시
 - `BlockOrdersPage`에 `doc_no` 텍스트 필터 추가로 사업 단위 일괄 조회 가능
 
@@ -371,9 +412,26 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 
 ### 노선도 GIS
 
-- 모든 노선 GIS는 `rail_computed_geometry` 단일 SOT
-- `rail_baseline_points`: KP + GPS anchor 원천
+- `rail_computed_geometry`: 기본 노선 GIS SOT (77노선, all_points 모드)
+- `rail_baseline_points`: KP + GPS anchor 원천 (center_only 모드 직접 사용)
 - **대한민국 지도** (`korea_map_level*.geojson`) **절대 삭제·변경 금지**
+
+#### 역 좌표 모드 (station_points_mode)
+
+`system_settings.map_settings.station_points_mode` 로 제어. **기본값: `center_only`**
+
+| 모드 | 노선도 앵커 | KP 보간 앵커 | 특징 |
+|---|---|---|---|
+| `center_only` | station_center + facility_point/start/end | 동일 | 역 진입로 굴곡 없음, 터널·교량 포함 |
+| `all_points` | rail_computed_geometry 전체 | 전체 앵커 | 기존 방식, 역 구내 굴곡 발생 가능 |
+
+**앵커 포함 기준 (center_only):**
+- ✅ `station_center`: 역 중심 GPS
+- ✅ `facility_point`: 변전소 등 점 시설물
+- ✅ `facility_start/end`: 터널·교량 경계점 (본선 위에 있으므로 포함)
+- ❌ `station_yard_start/end`: 역 진입로 (곡선 굴곡 유발, 제외)
+
+**중요**: 노선도 렌더링과 차단명령 KP 보간은 **반드시 동일한 앵커 셋**을 사용. 불일치 시 차단구간이 노선에서 이탈함.
 
 ---
 
@@ -385,6 +443,7 @@ zoom 배율별 전체 간격 (상선↔하선 중심 간):
 | `tc02_work_type_implementer` | `block_orders.work_type` + `implementer` 추가, `is_external` 마이그레이션 |
 | `tc03_bore_type` | `rail_facilities.bore_type` 추가 (터널·교량 선로 적용 방식) |
 | `tc04_system_settings` | `system_settings` 테이블 + 22개 색상 초기값 시드 |
+| `tc05_tracks_field` | `block_orders.direction` 삭제 → `tracks` TEXT(JSON) 교체. 단선차단/복선차단 → 선로차단 |
 
 ---
 

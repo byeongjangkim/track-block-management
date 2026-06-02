@@ -127,12 +127,12 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
 
     // 필수값 누락 검사 (전차선 단전은 km 없어도 section_note로 대체)
     const invalid = selected.filter(
-      (r) => !r.route_id || !r.direction || !r.work_date ||
+      (r) => !r.route_id || !r.tracks?.length || !r.work_date ||
              !r.start_time || !r.end_time ||
              (r.start_km === null && !r.section_note)
     );
     if (invalid.length > 0) {
-      alert(`${invalid.length}건에 필수 값(노선, 방향, 날짜, 시각)이 없습니다. 확인 후 다시 저장하세요.`);
+      alert(`${invalid.length}건에 필수 값(노선, 선로, 날짜, 시각)이 없습니다. 확인 후 다시 저장하세요.`);
       return;
     }
 
@@ -141,7 +141,7 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
       const items: BulkBlockOrderItem[] = selected.map((r) => ({
         route_id: r.route_id as number,
         organization_id: defaultOrgId,
-        direction: r.direction as 'UP' | 'DOWN',
+        tracks: (r.tracks ?? ['상선']) as import('../../types').TrackName[],
         start_km: r.start_km ?? null,
         end_km: r.end_km ?? null,
         section_note: r.section_note ?? null,
@@ -362,17 +362,21 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                             </div>
                           </td>
 
-                          {/* 방향 */}
-                          <td className={`px-1 py-1 ${needsClass(row, 'direction')}`}>
+                          {/* 선로 */}
+                          <td className={`px-1 py-1 ${needsClass(row, 'tracks')}`}>
                             <div className="relative">
                               <select
-                                value={row.direction ?? ''}
-                                onChange={(e) => updateRow(row._id, { direction: e.target.value as 'UP' | 'DOWN' | null })}
+                                value={row.tracks?.[0] ?? ''}
+                                onChange={(e) => updateRow(row._id, { tracks: e.target.value ? [e.target.value] : null })}
                                 className="w-16 h-7 border-0 bg-transparent text-xs focus:outline-none appearance-none cursor-pointer pr-4"
                               >
                                 <option value="">-</option>
-                                <option value="UP">상선</option>
-                                <option value="DOWN">하선</option>
+                                <option value="상선">상선</option>
+                                <option value="하선">하선</option>
+                                <option value="상1">상1</option>
+                                <option value="상2">상2</option>
+                                <option value="하1">하1</option>
+                                <option value="하2">하2</option>
                               </select>
                               <span className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-gray-400 text-xs">▾</span>
                             </div>

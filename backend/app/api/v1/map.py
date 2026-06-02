@@ -33,6 +33,84 @@ from app.models.user import User
 router = APIRouter(prefix="/map", tags=["노선도"])
 
 
+# ── center_only 모드: rail_baseline_points(station_center) 기반 노선 ──────
+
+def _get_geometry_center_only(db, line_type: str | None) -> dict:
+    """
+    station_mode=center_only: station_yard_start/end 제외한 앵커로 노선 geometry 반환.
+    포함: station_center, facility_point, facility_start, facility_end (터널·교량 경계 포함)
+    제외: station_yard_start, station_yard_end (역 진입로 굴곡 방지)
+    """
+    where_type = "AND rr.line_type = :line_type" if line_type else ""
+    rows = db.execute(
+        text(f"""
+            SELECT
+                rbp.rail_route_id,
+                rr.korail_route_code,
+                rr.name          AS route_name,
+                rr.line_type,
+                rr.default_track_count,
+                rr.default_has_catenary,
+                rbp.kp,
+                rbp.lat,
+                rbp.lon,
+                rbp.seq
+            FROM rail_baseline_points rbp
+            JOIN rail_routes rr ON rr.id = rbp.rail_route_id
+            WHERE rbp.point_type IN {_CENTER_ONLY_POINT_TYPES}
+              AND rbp.is_render_anchor = 1
+              {where_type}
+            ORDER BY rbp.rail_route_id, rbp.segment_no, rbp.kp, rbp.seq
+        """),
+        {**({"line_type": line_type} if line_type else {})},
+    ).fetchall()
+
+    sections_rows = db.execute(
+        text("""
+            SELECT rail_route_id, start_kp, end_kp, track_count, has_catenary, note
+            FROM rail_track_sections
+            ORDER BY rail_route_id, start_kp
+        """)
+    ).fetchall()
+    sections_by_route: dict[int, list] = {}
+    for s in sections_rows:
+        rid = s.rail_route_id
+        if rid not in sections_by_route:
+            sections_by_route[rid] = []
+        sections_by_route[rid].append({
+            "start_kp":     s.start_kp,
+            "end_kp":       s.end_kp,
+            "track_count":  s.track_count,
+            "has_catenary": bool(s.has_catenary),
+            "note":         s.note,
+        })
+
+    from itertools import groupby as _groupby
+    features = []
+    for route_id, pts in _groupby(rows, key=lambda r: r.rail_route_id):
+        pts_list = list(pts)
+        if not pts_list:
+            continue
+        first = pts_list[0]
+        coordinates = [[r.lon, r.lat, round(r.kp, 3)] for r in pts_list]
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "rail_route_id":        route_id,
+                "korail_route_code":    first.korail_route_code,
+                "route_name":           first.route_name,
+                "line_type":            first.line_type,
+                "default_track_count":  first.default_track_count,
+                "default_has_catenary": bool(first.default_has_catenary),
+                "track_sections":       sections_by_route.get(route_id, []),
+                "lod":                  "center_only",
+                "point_count":          len(coordinates),
+            },
+            "geometry": {"type": "LineString", "coordinates": coordinates},
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
 # ── rail_computed_geometry 전체 노선 ─────────────────────────────────────
 # 주의: /rail-routes/{id}/... 보다 먼저 등록
 
@@ -40,10 +118,16 @@ router = APIRouter(prefix="/map", tags=["노선도"])
 def get_all_rail_routes_geometry(
     lod: str = Query("high", pattern="^(high|mid|low)$"),
     line_type: str | None = Query(None, description="고속선 | 일반선"),
+    station_mode: str = Query("center_only", description="역 좌표 모드: center_only | all_points"),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """rail_computed_geometry 기반 전체 노선 GeoJSON.
+    """노선 GeoJSON 반환.
+
+    station_mode=center_only (기본):
+      rail_baseline_points의 station_center 포인트만 사용 — 예상치 못한 굴곡 방지
+    station_mode=all_points:
+      rail_computed_geometry 사용 (시점·중앙·종점 모두 포함한 사전계산 데이터)
 
     properties:
       - korail_route_code, route_name, line_type
@@ -51,8 +135,10 @@ def get_all_rail_routes_geometry(
       - default_has_catenary: 노선 기본 전차선 유무
       - track_sections: KP 구간별 선로수·전차선 예외 목록
     coordinates: [lon, lat, kp] — GeoJSON 3D 좌표 (세 번째 값 = KP)
-                  D3 렌더링 시 KP로 구간 경계를 찾아 복선/단선 분기 가능.
     """
+    if station_mode == "center_only":
+        return _get_geometry_center_only(db, line_type)
+
     where_type = "AND rcg.line_type = :line_type" if line_type else ""
     rows = db.execute(
         text(f"""
@@ -431,13 +517,39 @@ def get_org_viewport(
 
 # ── KP → (lat, lon) 보간 헬퍼 (rail_baseline_points 기반) ─────────────────
 
-def _interpolate_rail_kp(db: Session, rail_route_id: int, kp: float) -> tuple[float, float] | None:
-    rows = db.execute(
+# center_only 모드에서 허용되는 point_type
+# - station_center: 역 중심 GPS (포함)
+# - facility_point: 변전소 등 점 시설물 (포함)
+# - facility_start/end: 터널·교량 경계점 → 본선 위에 있으므로 포함
+# - station_yard_start/end: 역 구내 진입로 → 곡선 유발, 제외
+_CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start', 'facility_end')"
+
+
+def _get_station_mode(db: Session) -> str:
+    """system_settings에서 station_points_mode를 읽어 반환. 기본 'center_only'."""
+    row = db.execute(
         text("""
+            SELECT value FROM system_settings
+            WHERE category = 'map_settings' AND key = 'station_points_mode'
+        """)
+    ).fetchone()
+    return row[0] if row else 'center_only'
+
+
+def _interpolate_rail_kp(
+    db: Session,
+    rail_route_id: int,
+    kp: float,
+    center_only: bool = False,
+) -> tuple[float, float] | None:
+    pt_filter = f"AND point_type IN {_CENTER_ONLY_POINT_TYPES}" if center_only else ""
+    rows = db.execute(
+        text(f"""
             SELECT lat, lon, kp
             FROM rail_baseline_points
             WHERE rail_route_id=:rail_route_id
               AND is_interpolation_anchor = 1
+              {pt_filter}
             ORDER BY segment_no, kp, seq
         """),
         {"rail_route_id": rail_route_id},
@@ -461,14 +573,22 @@ def _interpolate_rail_kp(db: Session, rail_route_id: int, kp: float) -> tuple[fl
     return None
 
 
-def _rail_kp_range_coords(db: Session, rail_route_id: int, start_kp: float, end_kp: float) -> list[list[float]]:
+def _rail_kp_range_coords(
+    db: Session,
+    rail_route_id: int,
+    start_kp: float,
+    end_kp: float,
+    center_only: bool = False,
+) -> list[list[float]]:
     start, end = sorted((start_kp, end_kp))
+    pt_filter = f"AND point_type IN {_CENTER_ONLY_POINT_TYPES}" if center_only else ""
     rows = db.execute(
-        text("""
+        text(f"""
             SELECT lat, lon, kp
             FROM rail_baseline_points
             WHERE rail_route_id=:rail_route_id
               AND is_render_anchor = 1
+              {pt_filter}
             ORDER BY segment_no, kp, seq
         """),
         {"rail_route_id": rail_route_id},
@@ -478,7 +598,7 @@ def _rail_kp_range_coords(db: Session, rail_route_id: int, start_kp: float, end_
         return []
 
     coords: list[list[float]] = []
-    start_pt = _interpolate_rail_kp(db, rail_route_id, start)
+    start_pt = _interpolate_rail_kp(db, rail_route_id, start, center_only=center_only)
     if start_pt:
         coords.append([start_pt[1], start_pt[0]])
 
@@ -488,7 +608,7 @@ def _rail_kp_range_coords(db: Session, rail_route_id: int, start_kp: float, end_
             if not coords or coords[-1] != coord:
                 coords.append(coord)
 
-    end_pt = _interpolate_rail_kp(db, rail_route_id, end)
+    end_pt = _interpolate_rail_kp(db, rail_route_id, end, center_only=center_only)
     if end_pt:
         coord = [end_pt[1], end_pt[0]]
         if not coords or coords[-1] != coord:
@@ -561,6 +681,11 @@ def get_block_order_segments(
     from datetime import date as today_date
     target_date = work_date or today_date.today()
 
+    # 설정값에 따라 노선도 렌더링과 동일한 앵커 셋 사용 (일관성 유지)
+    # center_only: station_center + facility_point/start/end 사용 (station_yard 제외)
+    # all_points:  전체 앵커 사용 (station_yard 포함)
+    center_only = (_get_station_mode(db) == 'center_only')
+
     q = db.query(BlockOrder).filter(BlockOrder.work_date == target_date)
     if route_id is not None:
         q = q.filter(BlockOrder.route_id == route_id)
@@ -599,7 +724,7 @@ def get_block_order_segments(
                 pcut_kp_start = rf_start.kp_start
                 pcut_kp_end   = rf_end.kp_start
                 if bo.rail_route_id and pcut_kp_start is not None and pcut_kp_end is not None:
-                    coords = _rail_kp_range_coords(db, bo.rail_route_id, pcut_kp_start, pcut_kp_end)
+                    coords = _rail_kp_range_coords(db, bo.rail_route_id, pcut_kp_start, pcut_kp_end, center_only=center_only)
                 elif rf_start.lat and rf_start.lon and rf_end.lat and rf_end.lon:
                     # rail_route_id 없을 때만 GPS 직선 fallback
                     coords = [[rf_start.lon, rf_start.lat], [rf_end.lon, rf_end.lat]]
@@ -618,7 +743,7 @@ def get_block_order_segments(
                 if f_start is None or f_end is None:
                     continue
                 if bo.rail_route_id and f_start.km is not None and f_end.km is not None:
-                    coords = _rail_kp_range_coords(db, bo.rail_route_id, f_start.km, f_end.km)
+                    coords = _rail_kp_range_coords(db, bo.rail_route_id, f_start.km, f_end.km, center_only=center_only)
                     start_kp = f_start.km
                     end_kp   = f_end.km
                 elif f_start.lat and f_start.lon and f_end.lat and f_end.lon:
@@ -632,7 +757,7 @@ def get_block_order_segments(
             if start_kp is None or end_kp is None:
                 continue
             coords = (
-                _rail_kp_range_coords(db, bo.rail_route_id, start_kp, end_kp)
+                _rail_kp_range_coords(db, bo.rail_route_id, start_kp, end_kp, center_only=center_only)
                 if bo.rail_route_id
                 else []
             )
@@ -642,34 +767,44 @@ def get_block_order_segments(
         if len(coords) < 2:
             continue
 
-        # BOTH 방향: UP + DOWN 2개 feature 생성 (D3에서 각각 상/하선 색으로 표시)
-        directions = ["UP", "DOWN"] if bo.direction == "BOTH" else [bo.direction]
-        for dir_val in directions:
+        # 노선 선로 수 조회 (렌더링 시 물리적 위치 계산용)
+        route_track_count = 2
+        if rail_route:
+            route_track_count = rail_route.default_track_count or 2
+
+        # tracks: 선로별 feature 1개씩 생성
+        import json as _json
+        try:
+            track_list = _json.loads(bo.tracks) if isinstance(bo.tracks, str) else bo.tracks
+        except Exception:
+            track_list = ["상선"]
+        for track_val in track_list:
             features.append({
                 "type": "Feature",
                 "properties": {
-                    "id":              bo.id,
-                    "route_id":        bo.route_id,
-                    "rail_route_id":   bo.rail_route_id,
-                    "route_code":      route_code,
-                    "route_name":      route_name,
-                    "direction":       dir_val,
-                    "section_type":    section_type,
-                    "start_km":        bo.start_km,
-                    "end_km":          bo.end_km,
-                    "start_kp":        start_kp,
-                    "end_kp":          end_kp,
-                    "section_note":    section_note,
-                    "display_km":      display_km,
-                    "work_date":       bo.work_date.isoformat(),
-                    "start_time":      bo.start_time.strftime("%H:%M"),
-                    "end_time":        bo.end_time.strftime("%H:%M"),
-                    "field":           bo.field,
-                    "block_type":      bo.block_type,
-                    "work_type":       bo.work_type,
-                    "implementer":     bo.implementer,
-                    "danger_level":    bo.danger_level,
-                    "organization_id": bo.organization_id,
+                    "id":                bo.id,
+                    "route_id":          bo.route_id,
+                    "rail_route_id":     bo.rail_route_id,
+                    "route_code":        route_code,
+                    "route_name":        route_name,
+                    "track":             track_val,
+                    "route_track_count": route_track_count,
+                    "section_type":      section_type,
+                    "start_km":          bo.start_km,
+                    "end_km":            bo.end_km,
+                    "start_kp":          start_kp,
+                    "end_kp":            end_kp,
+                    "section_note":      section_note,
+                    "display_km":        display_km,
+                    "work_date":         bo.work_date.isoformat(),
+                    "start_time":        bo.start_time.strftime("%H:%M"),
+                    "end_time":          bo.end_time.strftime("%H:%M"),
+                    "field":             bo.field,
+                    "block_type":        bo.block_type,
+                    "work_type":         bo.work_type,
+                    "implementer":       bo.implementer,
+                    "danger_level":      bo.danger_level,
+                    "organization_id":   bo.organization_id,
                 },
                 "geometry": {"type": "LineString", "coordinates": coords},
             })

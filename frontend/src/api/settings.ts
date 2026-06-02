@@ -16,6 +16,7 @@ export interface AllSettings {
   block_colors?:    SettingItem[];
   danger_colors?:   SettingItem[];
   facility_colors?: SettingItem[];
+  map_settings?:    SettingItem[];
 }
 
 export async function fetchAllSettings(): Promise<AllSettings> {

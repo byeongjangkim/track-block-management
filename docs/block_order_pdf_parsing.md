@@ -101,7 +101,7 @@ def _extract_name_phone(pattern, text):
 | 시각 | ✅ 시작 시각 | ✅ 종료 시각 | `start_time`, `end_time` |
 | 역간구간 | 역간 구간명 or SP/SS명 | 종료 SP/SS명 | `section_note` (단전 시) |
 | 지점km | ✅ 시작km | ✅ 종료km | `start_km`, `end_km` |
-| 선로 | ✅ 방향 (상선/하선 등) | - | `direction` |
+| 선로 | ✅ 선로명 (상선/하선/상1/하1 등) | - | `tracks` (JSON 배열) |
 | 사유/시행사항 | ✅ 작업 사유 | 추가 비고 | `reason` |
 
 ### 3.3 전차선 단전 처리
@@ -124,14 +124,23 @@ def _extract_name_phone(pattern, text):
 | SS | 변전소 |
 | SSP | 보조급전구분소 |
 
-### 3.4 방향(direction) 매핑
+### 3.4 선로(tracks) 매핑 — `_TRACKS_MAP`
 
-| 표 내 표기 | DB 값 |
-|---|---|
-| 상선, 상1, 상2, 상하 등 | `UP` |
-| 하선, 하1, 하2 등 | `DOWN` |
-| 단선 | `UP` (사용자 확인 권장) |
-| 구내, 상하선 | `UP` |
+PDF 선로 열의 텍스트 → `tracks` JSON 배열로 변환:
+
+| 표 내 표기 | tracks 값 | 비고 |
+|---|---|---|
+| 상선 | `["상선"]` | 복선 상선 |
+| 하선 | `["하선"]` | 복선 하선 |
+| 상하선, 상하 | `["상선","하선"]` | 양방향 |
+| 상1 | `["상1"]` | 2복선/3복선 |
+| 상2 | `["상2"]` | |
+| 하1 | `["하1"]` | |
+| 하2 | `["하2"]` | |
+| 단선 | `["상선"]` | 사용자 확인 권장 |
+| 구내 | `["상선"]` | 역구내 기본값 |
+
+PdfImportModal에서 단건 선택 드롭다운으로 수동 수정 가능.
 
 ---
 
@@ -148,7 +157,9 @@ CREATE TABLE block_orders (
     created_by       INTEGER NOT NULL REFERENCES users(id),
 
     -- 노선·위치
-    direction        TEXT(4)  NOT NULL,          -- 'UP' / 'DOWN'
+    -- direction 컬럼은 Alembic tc05에서 삭제됨 → tracks TEXT(JSON)으로 대체
+    tracks           TEXT     NOT NULL DEFAULT '["상선"]',
+                                                 -- JSON 배열: ["상선"] | ["하선"] | ["상선","하선"] 등
     start_km         REAL,                        -- NULL 허용 (전차선 단전)
     end_km           REAL,                        -- NULL 허용
     section_note     TEXT(200),                  -- 단전구간명 (예: "청도SP~밀양SS")

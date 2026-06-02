@@ -29,9 +29,11 @@ import type { Route, FacilityFilter } from '../types';
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function fmtTime(t: string) { return t.slice(0, 5); }
 
-const DIR_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선', BOTH: '전체' };
-// 방향 색상 제거 — 방향은 복선 평행선 위치로 구분 (좌=상선, 우=하선)
-const DIR_COLOR: Record<string, string>  = { UP: '#64748b', DOWN: '#64748b', BOTH: '#6b7280' };
+/** 선로 목록을 읽기 쉬운 문자열로 반환 */
+function fmtTracks(tracks: string[]): string {
+  return tracks.join(' · ');
+}
+const TRACK_COLOR = '#64748b';
 
 const DANGER_COLOR: Record<string, string> = { A: '#ef4444', B: '#f59e0b', C: '#10b981' };
 const DANGER_LABEL: Record<string, string> = { A: 'A 위험', B: 'B 주의', C: 'C 일반' };
@@ -314,10 +316,10 @@ export default function BlockMapPage() {
   const consecutiveSeries = useMemo(() => {
     if (!selectedOrder) return null;
 
-    // ±45일 확장 데이터에서 같은 노선+방향+분야 감지
+    // ±45일 확장 데이터에서 같은 노선+선로+분야 감지
     const candidates = extBlockOrders.filter((b) =>
       b.rail_route_id === selectedOrder.rail_route_id &&
-      b.direction === selectedOrder.direction &&
+      JSON.stringify([...b.tracks].sort()) === JSON.stringify([...selectedOrder.tracks].sort()) &&
       b.field === selectedOrder.field &&
       Math.abs((b.start_kp ?? 0) - (selectedOrder.start_kp ?? 0)) < 0.5 &&
       Math.abs((b.end_kp ?? 0) - (selectedOrder.end_kp ?? 0)) < 0.5
@@ -817,9 +819,9 @@ export default function BlockMapPage() {
                     )}
                     <span
                       className="px-1 rounded text-white text-[9px] shrink-0"
-                      style={{ backgroundColor: DIR_COLOR[bo.direction] ?? '#888' }}
+                      style={{ backgroundColor: TRACK_COLOR }}
                     >
-                      {DIR_LABEL[bo.direction] ?? bo.direction}
+                      {fmtTracks(bo.tracks)}
                     </span>
                   </div>
                   <div className="text-gray-500">
@@ -895,9 +897,9 @@ export default function BlockMapPage() {
                 </span>
                 <span
                   className="px-1.5 py-0.5 rounded text-white text-[10px] font-medium shrink-0"
-                  style={{ backgroundColor: DIR_COLOR[selectedOrder.direction] ?? '#888' }}
+                  style={{ backgroundColor: TRACK_COLOR }}
                 >
-                  {DIR_LABEL[selectedOrder.direction] ?? selectedOrder.direction}
+                  {fmtTracks(selectedOrder.tracks)}
                 </span>
                 {selectedOrder.danger_level && (
                   <span

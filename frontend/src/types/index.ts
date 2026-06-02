@@ -1,4 +1,14 @@
-export type Direction = 'UP' | 'DOWN' | 'BOTH';
+// 선로 이름 — 복선: 상선/하선, 2복선: 상1~하2, 3복선: 상1~하3
+export type TrackName = '상선' | '하선' | '상1' | '상2' | '상3' | '하1' | '하2' | '하3';
+
+/** 선로 수에 따른 선택 가능한 선로 목록 */
+export function availableTracks(trackCount: number): TrackName[] {
+  if (trackCount === 1) return ['상선'];
+  if (trackCount === 2) return ['상선', '하선'];
+  if (trackCount === 4) return ['상1', '상2', '하1', '하2'];
+  if (trackCount === 6) return ['상1', '상2', '상3', '하1', '하2', '하3'];
+  return ['상선', '하선'];
+}
 
 // 차단현황도 시설물 분류 필터
 // 역: station_type별 세분화 / 구조물·전기설비: 세부 시설물 유형별
@@ -37,10 +47,11 @@ export interface Route {
   name: string;
   start_km: number;
   end_km: number;
-  start_station: string | null;   // 시점역명 (km=0.0 기준역)
-  end_station: string | null;     // 종점역명
-  up_direction: string | null;    // 상선 방향 표시 (예: "서울 방향")
-  down_direction: string | null;  // 하선 방향 표시 (예: "부산 방향")
+  start_station: string | null;
+  end_station: string | null;
+  up_direction: string | null;
+  down_direction: string | null;
+  default_track_count: number;   // 1=단선, 2=복선, 4=2복선, 6=3복선
 }
 
 export interface Facility {
@@ -57,7 +68,7 @@ export interface BlockOrder {
   organization_id: number | null;
   route_id: number;
   rail_route_id: number | null;
-  direction: Direction;
+  tracks: TrackName[];
   start_km: number | null;
   end_km: number | null;
   start_kp: number | null;
@@ -102,7 +113,7 @@ export interface BlockOrderCreate {
   route_id: number | null;
   rail_route_id?: number | null;
   organization_id?: number;
-  direction: Direction;
+  tracks: TrackName[];
   start_km: number | null;
   end_km: number | null;
   start_kp?: number | null;
@@ -159,7 +170,7 @@ export interface AnchorData {
 
 export interface ParsedBlockOrder {
   route_name: string | null;
-  direction: 'UP' | 'DOWN' | null;
+  tracks: TrackName[] | null;
   start_km: number | null;
   end_km: number | null;
   work_date: string | null;       // YYYY-MM-DD
@@ -191,7 +202,7 @@ export interface ParsedRow {
   start_km: number | null;
   end_km: number | null;
   section_note: string | null;       // 전차선 단전 구간명 (예: "청도SP~밀양SS")
-  direction: 'UP' | 'DOWN' | null;
+  tracks: TrackName[] | null;
   block_type: string | null;
   reason: string | null;
   field: string;
@@ -244,7 +255,7 @@ export interface BulkBlockOrderItem {
   route_id: number;
   rail_route_id?: number | null;
   organization_id?: number;
-  direction: 'UP' | 'DOWN';
+  tracks: TrackName[];
   start_km?: number | null;
   end_km?: number | null;
   start_kp?: number | null;

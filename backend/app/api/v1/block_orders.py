@@ -93,6 +93,12 @@ def _prepare_block_order_data(data: dict, db: Session) -> dict:
     if implementer is not None:
         data["is_external"] = (implementer == "외부")
 
+    # tracks: list → JSON 텍스트 직렬화 (DB TEXT 컬럼)
+    import json as _json
+    tracks = data.get("tracks")
+    if isinstance(tracks, list):
+        data["tracks"] = _json.dumps(tracks, ensure_ascii=False)
+
     return data
 
 
@@ -313,7 +319,7 @@ class BulkBlockOrderItem(BaseModel):
     route_id: int | None = None
     rail_route_id: int | None = None
     organization_id: int | None = None
-    direction: str
+    tracks: list[str]
     start_km: float | None = None   # 전차선 단전 등 km 없는 경우 None
     end_km: float | None = None
     start_kp: float | None = None
@@ -395,11 +401,12 @@ def bulk_create_block_orders(
                 parts = s.split(':')
                 return time_type(int(parts[0]), int(parts[1]))
 
+            import json as _json
             order = BlockOrder(
                 route_id=data.get("route_id"),
                 rail_route_id=data.get("rail_route_id"),
                 organization_id=org_id,
-                direction=data["direction"],
+                tracks=_json.dumps(data["tracks"], ensure_ascii=False),
                 start_km=data.get("start_km"),
                 end_km=data.get("end_km"),
                 start_kp=data.get("start_kp"),

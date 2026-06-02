@@ -195,7 +195,7 @@ export default function CalendarPage() {
                     {o.block_type === '전차선단전'
                       ? (o.section_note ?? 'KP 미지정')
                       : `${o.start_km}~${o.end_km}km`}
-                    {' '}({o.direction === 'UP' ? '상선' : o.direction === 'DOWN' ? '하선' : '전체'})
+                    {' '}({o.tracks.join('·')})
                   </div>
                   <div className="text-gray-500">
                     {o.start_time.slice(0, 5)} ~ {o.end_time.slice(0, 5)}

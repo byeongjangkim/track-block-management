@@ -6,6 +6,7 @@
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSettingsStore } from '../store/settingsStore';
 import {
   fetchAllSettings,
   updateSetting,
@@ -164,11 +165,135 @@ function CategorySection({
   );
 }
 
+// ── 지도 설정 섹션 ────────────────────────────────────────────────────────────
+
+function MapSettingsSection({
+  currentMode,
+  onSaved,
+}: {
+  currentMode: 'center_only' | 'all_points';
+  onSaved: () => void;
+}) {
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<'center_only' | 'all_points'>(currentMode);
+  const isDirty = mode !== currentMode;
+
+  const saveMut = useMutation({
+    mutationFn: () => updateSetting('map_settings', 'station_points_mode', mode),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['system-settings'] }); onSaved(); },
+  });
+  const resetMut = useMutation({
+    mutationFn: () => resetSetting('map_settings', 'station_points_mode'),
+    onSuccess: () => {
+      setMode('center_only');
+      qc.invalidateQueries({ queryKey: ['system-settings'] });
+      onSaved();
+    },
+  });
+
+  return (
+    <section className="mb-8">
+      <h2 className="text-base font-semibold text-gray-700 mb-3 border-b pb-2">지도 설정</h2>
+
+      <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <div className="flex items-start justify-between gap-6">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-gray-800 mb-1">역 좌표 모드</p>
+            <p className="text-xs text-gray-500 mb-4">
+              노선도를 그릴 때 사용할 역 GPS 좌표 범위를 선택합니다.<br />
+              시점·종점 좌표를 포함하면 실제 선형에 더 가깝지만,
+              곡선 반경 데이터 없이 직선 보간되어 예상치 못한 굴곡이 발생할 수 있습니다.
+            </p>
+
+            <div className="flex gap-4">
+              {/* center_only */}
+              <label className={`flex-1 flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                mode === 'center_only'
+                  ? 'border-blue-500 bg-blue-50'
+                  : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="station_mode"
+                  value="center_only"
+                  checked={mode === 'center_only'}
+                  onChange={() => setMode('center_only')}
+                  className="mt-0.5 accent-blue-600"
+                />
+                <div>
+                  <div className="text-sm font-semibold text-gray-800">
+                    역 중심 좌표만
+                    <span className="ml-2 text-xs font-normal text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded">기본값</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    역 중앙(center) GPS 좌표만 사용하여 보간합니다.<br />
+                    불필요한 굴곡 없이 자연스러운 노선도가 표시됩니다.
+                  </div>
+                </div>
+              </label>
+
+              {/* all_points */}
+              <label className={`flex-1 flex items-start gap-3 p-4 rounded-lg border-2 cursor-pointer transition-colors ${
+                mode === 'all_points'
+                  ? 'border-orange-500 bg-orange-50'
+                  : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="radio"
+                  name="station_mode"
+                  value="all_points"
+                  checked={mode === 'all_points'}
+                  onChange={() => setMode('all_points')}
+                  className="mt-0.5 accent-orange-600"
+                />
+                <div>
+                  <div className="text-sm font-semibold text-gray-800">
+                    시점·중앙·종점 모두
+                    <span className="ml-2 text-xs font-normal text-orange-600 bg-orange-100 px-1.5 py-0.5 rounded">고급</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    역의 시점·종점 좌표도 포함해 보간합니다.<br />
+                    곡선 반경 미적용 구간에서 굴곡이 발생할 수 있습니다.
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 pt-8 shrink-0">
+            <button
+              onClick={() => saveMut.mutate()}
+              disabled={!isDirty || saveMut.isPending}
+              className={`px-4 py-2 text-sm rounded-lg font-medium transition-colors ${
+                isDirty
+                  ? 'bg-blue-600 text-white hover:bg-blue-700'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              {saveMut.isPending ? '저장 중…' : '저장'}
+            </button>
+            {currentMode !== 'center_only' && (
+              <button
+                onClick={() => { if (confirm('기본값(역 중심 좌표만)으로 복원하시겠습니까?')) resetMut.mutate(); }}
+                disabled={resetMut.isPending}
+                className="px-4 py-2 text-sm border rounded-lg text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+              >
+                기본값 복원
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ── 메인 페이지 ───────────────────────────────────────────────────────────────
 
 export default function SystemSettingsPage() {
   const qc = useQueryClient();
   const [savedMsg, setSavedMsg] = useState('');
+  const { loadSettings } = useSettingsStore();
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ['system-settings'],
@@ -250,6 +375,16 @@ export default function SystemSettingsPage() {
               />
             );
           })}
+
+          {/* 지도 설정 — 역 좌표 모드 */}
+          <MapSettingsSection
+            currentMode={(settings?.map_settings?.find(i => i.key === 'station_points_mode')?.value ?? 'center_only') as 'center_only' | 'all_points'}
+            onSaved={async () => {
+              qc.invalidateQueries({ queryKey: ['system-settings'] });
+              await loadSettings();
+              flash('저장되었습니다. 새로고침 후 지도에 반영됩니다.');
+            }}
+          />
 
           {/* 시설물 아이콘 이미지 (Phase 2 예정) */}
           <section className="mb-8">

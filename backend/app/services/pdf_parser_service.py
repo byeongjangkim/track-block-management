@@ -75,13 +75,20 @@ _RE_TIME = re.compile(r'(\d{1,2})[:\s시](\d{2})(?:\s*분)?')
 _RE_KM = re.compile(r'\b(\d{1,4}\.\d{1,3})\b')
 
 # 선로 열 방향 매핑
-_DIRECTION_MAP = {
-    '상하': 'UP', '상하1': 'UP', '상하2': 'UP', '상하3': 'UP',
-    '상선': 'UP', '상1': 'UP', '상2': 'UP', '상3': 'UP',
-    '하선': 'DOWN', '하1': 'DOWN', '하2': 'DOWN', '하3': 'DOWN',
-    '단선': 'UP',      # 단방향 미확정, 사용자 수정 필요
-    '구내': 'UP',      # 역구내 작업 — 상선 기본값, 사용자 확인 권장
-    '상하선': 'UP',    # 상하 양방향
+# PDF 선로 키워드 → tracks 목록 매핑
+_TRACKS_MAP: dict[str, list[str]] = {
+    '상하선': ['상선', '하선'],
+    '상하': ['상선', '하선'],
+    '상선': ['상선'],
+    '하선': ['하선'],
+    '상1': ['상1'],
+    '상2': ['상2'],
+    '상3': ['상3'],
+    '하1': ['하1'],
+    '하2': ['하2'],
+    '하3': ['하3'],
+    '단선': ['상선'],   # 단방향 미확정 — 사용자 수정 권장
+    '구내': ['상선'],   # 역구내 기본값 — 사용자 확인 권장
 }
 
 
@@ -377,9 +384,9 @@ def parse_cover(pages: list[str]) -> dict:
 
 # ── 세부내역 표 파싱 ──────────────────────────────────────────────────────────
 
-def _parse_direction(line_text: str) -> Optional[str]:
-    """선로 열 값에서 방향을 반환. 매핑 실패 시 None."""
-    for key, val in _DIRECTION_MAP.items():
+def _parse_tracks(line_text: str) -> Optional[list[str]]:
+    """선로 열 값에서 tracks 목록을 반환. 매핑 실패 시 None."""
+    for key, val in _TRACKS_MAP.items():
         if key in line_text:
             return val
     return None
@@ -387,7 +394,7 @@ def _parse_direction(line_text: str) -> Optional[str]:
 
 def _needs_review(row: dict) -> bool:
     """사용자 확인이 필요한 행 여부."""
-    if row.get('direction') is None:
+    if row.get('tracks') is None:
         return True
     # km 없는 경우: section_note가 있으면 전차선 단전으로 OK, 없으면 검토 필요
     if row.get('start_km') is None and not row.get('section_note'):
@@ -450,7 +457,7 @@ def _parse_table_rows(raw_rows: list[list], current_section: str, route_name: Op
             km_vals = _RE_KM.findall(col_km)
             start_km = float(km_vals[0]) if km_vals else None
 
-            direction = _parse_direction(col_line)
+            tracks = _parse_tracks(col_line)
             reason = col_reason.strip()
             field, field_conf = _infer_field(reason + ' ' + col_range + ' ' + current_section)
 
@@ -462,7 +469,7 @@ def _parse_table_rows(raw_rows: list[list], current_section: str, route_name: Op
                 'start_km': start_km,
                 'end_km': None,
                 'section_note': col_range.strip() if is_power and not km_vals else None,
-                'direction': direction,
+                'tracks': tracks,
                 'block_type': current_section,
                 'reason': reason,
                 'field': field,
@@ -568,7 +575,7 @@ def parse_detail(pages_raw: list, route_name: Optional[str] = None) -> list[dict
                         'end_time': None,
                         'start_km': float(km_vals[0]) if km_vals else None,
                         'end_km': None,
-                        'direction': _parse_direction(rest),
+                        'tracks': _parse_tracks(rest),
                         'block_type': current_section,
                         'reason': rest.split()[-1] if rest.split() else '',
                         'field': field,
@@ -719,13 +726,13 @@ def parse_block_order_pdf(file_bytes: bytes) -> dict:
     rows = result.get('rows', [])
     first = rows[0] if rows else {}
 
-    fields = ['route_name', 'direction', 'start_km', 'end_km',
+    fields = ['route_name', 'tracks', 'start_km', 'end_km',
               'work_date', 'start_time', 'end_time', 'field',
               'block_type', 'work_supervisor', 'safety_manager']
 
     out = {
         'route_name': first.get('route_name') or meta.get('route_name'),
-        'direction': first.get('direction'),
+        'tracks': first.get('tracks'),
         'start_km': first.get('start_km'),
         'end_km': first.get('end_km'),
         'work_date': first.get('work_date'),

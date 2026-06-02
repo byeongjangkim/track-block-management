@@ -75,14 +75,17 @@ export const DEFAULT_FACILITY_COLORS: FacilityColors = {
   junction:       '#059669',
 };
 
+export type StationPointsMode = 'center_only' | 'all_points';
+
 interface SettingsState {
-  loaded:         boolean;
-  raw:            AllSettings;       // DB 원본 (설정 페이지 편집용)
-  routeColors:    RouteColors;
-  blockColors:    BlockColors;
-  dangerColors:   DangerColors;
-  facilityColors: FacilityColors;
-  loadSettings:   () => Promise<void>;
+  loaded:             boolean;
+  raw:                AllSettings;       // DB 원본 (설정 페이지 편집용)
+  routeColors:        RouteColors;
+  blockColors:        BlockColors;
+  dangerColors:       DangerColors;
+  facilityColors:     FacilityColors;
+  stationPointsMode:  StationPointsMode; // 역 좌표 모드
+  loadSettings:       () => Promise<void>;
 }
 
 function pick(items: SettingItem[] | undefined, key: string, fallback: string): string {
@@ -90,12 +93,13 @@ function pick(items: SettingItem[] | undefined, key: string, fallback: string): 
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  loaded:         false,
-  raw:            {},
-  routeColors:    DEFAULT_ROUTE_COLORS,
-  blockColors:    DEFAULT_BLOCK_COLORS,
-  dangerColors:   DEFAULT_DANGER_COLORS,
-  facilityColors: DEFAULT_FACILITY_COLORS,
+  loaded:            false,
+  raw:               {},
+  routeColors:       DEFAULT_ROUTE_COLORS,
+  blockColors:       DEFAULT_BLOCK_COLORS,
+  dangerColors:      DEFAULT_DANGER_COLORS,
+  facilityColors:    DEFAULT_FACILITY_COLORS,
+  stationPointsMode: 'center_only',
 
   loadSettings: async () => {
     try {
@@ -104,9 +108,14 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       const bc = data.block_colors;
       const dc = data.danger_colors;
       const fc = data.facility_colors;
+      const ms = data.map_settings;
+      const rawMode = ms?.find(i => i.key === 'station_points_mode')?.value;
+      const stationMode: StationPointsMode =
+        rawMode === 'all_points' ? 'all_points' : 'center_only';
       set({
         loaded: true,
         raw:    data,
+        stationPointsMode: stationMode,
         routeColors: {
           highway:        pick(rc, 'highway',         DEFAULT_ROUTE_COLORS.highway),
           electrified:    pick(rc, 'electrified',     DEFAULT_ROUTE_COLORS.electrified),

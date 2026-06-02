@@ -11,5 +11,6 @@ class RouteResponse(BaseModel):
     end_station: str | None = None     # 종점역명
     up_direction: str | None = None    # 상선 방향 표시 (예: "서울 방향")
     down_direction: str | None = None  # 하선 방향 표시 (예: "부산 방향")
+    default_track_count: int = 2       # 선로 수: 1=단선, 2=복선, 4=2복선, 6=3복선
 
     model_config = {"from_attributes": True}

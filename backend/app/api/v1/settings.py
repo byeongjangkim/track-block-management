@@ -20,13 +20,25 @@ from app.models.user import User
 
 router = APIRouter(prefix="/settings", tags=["시스템 설정"])
 
-VALID_CATEGORIES = {'route_colors', 'block_colors', 'danger_colors', 'facility_colors'}
+VALID_CATEGORIES = {'route_colors', 'block_colors', 'danger_colors', 'facility_colors', 'map_settings'}
 
-
+# 카테고리별 값 검증 함수
 def _is_valid_color(value: str) -> bool:
     """#RRGGBB 형식 색상 코드 검증"""
     import re
     return bool(re.match(r'^#[0-9a-fA-F]{6}$', value))
+
+COLOR_CATEGORIES = {'route_colors', 'block_colors', 'danger_colors', 'facility_colors'}
+
+def _is_valid_value(category: str, key: str, value: str) -> tuple[bool, str]:
+    """설정 값 유효성 검증. (ok, error_msg) 반환."""
+    if category in COLOR_CATEGORIES:
+        if not _is_valid_color(value):
+            return False, f"색상 코드 형식이 올바르지 않습니다: {value} (#RRGGBB 필요)"
+    elif category == 'map_settings':
+        if key == 'station_points_mode' and value not in ('center_only', 'all_points'):
+            return False, "station_points_mode는 'center_only' 또는 'all_points'여야 합니다"
+    return True, ""
 
 
 def _rows_to_dict(rows) -> dict:
@@ -101,12 +113,10 @@ def update_setting(
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 카테고리입니다")
 
-    # 색상 값 검증
-    if not _is_valid_color(body.value):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="색상 코드 형식이 잘못되었습니다. #RRGGBB 형식으로 입력하세요",
-        )
+    # 값 검증
+    ok, err = _is_valid_value(category, key, body.value)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
 
     existing = db.execute(
         text("SELECT id FROM system_settings WHERE category = :c AND key = :k"),

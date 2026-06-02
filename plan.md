@@ -1,7 +1,7 @@
 # 개발 계획 (plan.md)
 
 > 프로젝트: 선로차단작업 관리 프로그램 (Track-Block-Management)  
-> 마지막 갱신: 2026-06-02 (Phase H 완료)
+> 마지막 갱신: 2026-06-03 (Phase I 완료)
 
 ---
 
@@ -16,6 +16,7 @@
 | **Phase F** | 노선 색상 체계, 선로 구성(복선·단선), 전차선 유무, 작업형태·시행주체 | ✅ 완료 |
 | **Phase G** | 터널·교량 심볼, 다중 레인 차단구간, fly-to 포커스 | ✅ 완료 |
 | **Phase H** | 시스템 설정(색상 관리), 사업건별 지도 강조, 연속 작업 감지 | ✅ 완료 |
+| **Phase I** | tracks 모델 전환, 노선도 좌표 모드, 다복선 LOD, 차단구간 두께·배지 개선 | ✅ 완료 |
 
 ---
 
@@ -88,6 +89,64 @@ category / key / value / default_value / label / description / sort_order
 
 ---
 
+## Phase I 완료 내역 (2026-06-03)
+
+### 1. 선로(tracks) 모델 전환 — Alembic `tc05_tracks_field` ✅
+
+**변경 내용**: `block_orders.direction VARCHAR(4)` → `tracks TEXT` (JSON 배열)
+
+| 이전 | 이후 |
+|---|---|
+| `direction = 'UP'` | `tracks = '["상선"]'` |
+| `direction = 'DOWN'` | `tracks = '["하선"]'` |
+| `direction = 'BOTH'` | `tracks = '["상선","하선"]'` |
+
+- `block_type`: 단선차단/복선차단 → **선로차단** 통합
+- 선로 이름 체계: 복선=상선/하선, 2복선=상1~하2, 3복선=상1~하3
+- 등록 폼: 방향 드롭다운 → 선로 체크박스 (노선 `default_track_count` 기반)
+- routes API에 `default_track_count` 추가 (rail_routes 이름 매핑)
+
+### 2. 차단구간 렌더링 개선 ✅
+
+**선로 이름 기반 물리 위치 계산**:
+- `trackNameToIndex()`: 상선→0, 하선→1, 상1~하3→2복선/3복선 인덱스
+- `blockSegmentOffsetSvg()`: 선로 이름 + 노선 선로 수 + 레인 인덱스 → SVG 오프셋
+- GeoJSON feature에 `track`(선로명), `route_track_count`(노선 선로 수) 속성 추가
+
+**차단구간 선 두께 zoom 반응**:
+- 이전: `6/√k` (zoom 증가할수록 얇아짐)
+- 이후: `3 + log₂(k)` (zoom 증가할수록 두꺼워짐)
+
+**다복선(2복선·3복선) 선로 간격 LOD**:
+- zoom ≤ 5.8: 압축 모드 (복선과 동일 스팬)
+- zoom 5.8→20: 점진적 확장
+- zoom ≥ 20: 완전 확장 (선로 간 간격 = 복선 상하선 간격 단위)
+
+**배지 클릭 fly-to 복원**:
+- `g.block-badge` 요소에 `.on('click', ...)` 핸들러 재추가
+- zoom=2.5, 배지 중심점으로 700ms 애니메이션
+
+### 3. 역 좌표 모드 (station_points_mode) ✅
+
+**목적**: 역 구내 진입로(station_yard_start/end) 좌표에 의한 예상치 못한 노선 굴곡 방지
+
+**설정**: `system_settings.map_settings.station_points_mode`
+- `center_only` (기본): 역중심 + 시설물 앵커만 사용
+- `all_points`: 기존 rail_computed_geometry 전체 사용
+
+**핵심 규칙**:
+1. 노선 geometry 렌더링과 차단명령 KP 보간은 동일한 앵커 셋 사용
+2. `facility_start/end`(터널·교량)는 center_only에서도 반드시 포함
+3. `station_yard_start/end`만 center_only에서 제외
+
+**프론트엔드**: `settingsStore.stationPointsMode` → geometry queryKey에 포함 → 설정 변경 시 자동 재요청
+
+**시스템 설정 페이지**:
+- "지도 설정" 섹션 추가 (라디오 버튼 UI)
+- 저장 후 `loadSettings()` + `queryClient.invalidateQueries()` 동시 호출
+
+---
+
 ## 현재 운영 환경
 
 | 항목 | 값 |
@@ -98,7 +157,7 @@ category / key / value / default_value / label / description / sort_order
 | 노선 수 | 156개 (본선 143 + 기지 13) |
 | Baseline 보유 노선 | 77개 |
 | Computed geometry | 77개 노선, 16,295점 |
-| 시스템 설정 항목 | 22개 색상 설정 |
+| 시스템 설정 항목 | 23개 (색상 22개 + station_points_mode 1개) |
 
 ---
 

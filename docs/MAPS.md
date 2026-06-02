@@ -43,7 +43,26 @@
 
 고속선 추가 시: `UPDATE rail_routes SET line_type = '고속선' WHERE korail_route_code = 'Hx';`
 
-### 1-3. rail_computed_geometry 현황 (2026-05-27)
+### 1-3. 역 좌표 모드 (station_points_mode)
+
+노선 geometry API와 차단명령 KP 보간에 사용되는 앵커 필터를 제어.  
+`system_settings.map_settings.station_points_mode`로 설정. **기본값: `center_only`**
+
+| 모드 | 앵커 필터 | 경부고속선 기준 앵커 수 |
+|---|---|---|
+| `center_only` | `station_center + facility_point + facility_start + facility_end` | 35개 |
+| `all_points` | `is_render_anchor=1` 전체 | 59개 |
+
+**`center_only` 에서 제외되는 point_type:**
+- `station_yard_start`: 역 구내 진입로 앵커 — 본선에서 분기하는 커브 때문에 예상치 못한 굴곡 유발
+- `station_yard_end`: 역 구내 출구 앵커 — 동일한 이유로 제외
+
+**`center_only` 에서 반드시 포함해야 하는 point_type:**
+- `facility_start/end`: 터널·교량 경계점 — 본선 위에 있으므로 반드시 포함 (누락 시 KP 보간 오류)
+
+**일관성 규칙:** 노선 geometry 렌더링과 차단명령 KP 보간(`_rail_kp_range_coords`, `_interpolate_rail_kp`)은 반드시 동일한 앵커 셋을 사용해야 함. 불일치 시 차단구간 선분이 노선을 벗어남.
+
+### 1-4. rail_computed_geometry 현황 (2026-05-27)
 
 | 항목 | 값 |
 |---|---|

@@ -5,7 +5,8 @@ import { fetchRoutes } from '../../api/routes';
 import { fetchOrganizations } from '../../api/organizations';
 import { fetchDepotRoutes, fetchRailSubstations } from '../../api/map';
 import { useAuthStore } from '../../store/authStore';
-import type { BlockOrder, BlockOrderCreate } from '../../types';
+import type { BlockOrder, BlockOrderCreate, TrackName } from '../../types';
+import { availableTracks } from '../../types';
 import type { AxiosError } from 'axios';
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
 }
 
 const ALL_FIELDS    = ['시설', '전기', '건축'];
-const BLOCK_TYPES   = ['단선차단', '복선차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
+const BLOCK_TYPES   = ['선로차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
 const POWER_CUT_TYPE = '전차선단전';
 const WORK_TYPES    = [
   { value: '인력', label: '인력작업', desc: '밀차 등 인력·공기구류' },
@@ -33,7 +34,7 @@ function today() {
 const EMPTY: BlockOrderCreate = {
   route_id: 0,
   rail_route_id: null,
-  direction: 'DOWN',
+  tracks: ['하선'] as TrackName[],
   track_name: null,
   start_km: 0,
   end_km: 0,
@@ -47,7 +48,7 @@ const EMPTY: BlockOrderCreate = {
   start_time: '09:00',
   end_time: '17:00',
   field: ALL_FIELDS[0],
-  block_type: '단선차단',
+  block_type: '선로차단',
   work_type: null,
   has_equipment: false,
   has_labor: true,
@@ -91,7 +92,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
       ? {
           route_id: initial.route_id,
           organization_id: initial.organization_id ?? undefined,
-          direction: initial.direction,
+          tracks: initial.tracks,
           start_km: initial.start_km ?? 0,
           end_km: initial.end_km ?? 0,
           section_note: initial.section_note ?? '',
@@ -202,7 +203,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
       setForm((f) => ({
         ...f,
         ...(matched ? { route_id: matched.id } : {}),
-        ...(result.direction ? { direction: result.direction } : {}),
+        ...(result.tracks ? { tracks: result.tracks } : {}),
         ...(result.start_km != null ? { start_km: result.start_km } : {}),
         ...(result.end_km != null ? { end_km: result.end_km } : {}),
         ...(result.work_date ? { work_date: result.work_date } : {}),
@@ -374,21 +375,21 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
           <div className="flex gap-2 text-sm">
             <button
               type="button"
-              onClick={() => { setRouteType('line'); setForm((f) => ({ ...f, rail_route_id: null, track_name: null, direction: 'DOWN' })); }}
+              onClick={() => { setRouteType('line'); setForm((f) => ({ ...f, rail_route_id: null, track_name: null, tracks: ['하선'] as TrackName[] })); }}
               className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${!isDepot ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
             >
               본선 작업
             </button>
             <button
               type="button"
-              onClick={() => { setRouteType('depot'); setForm((f) => ({ ...f, route_id: 0, start_km: null, end_km: null, direction: 'BOTH' })); }}
+              onClick={() => { setRouteType('depot'); setForm((f) => ({ ...f, route_id: 0, start_km: null, end_km: null, tracks: ['상선', '하선'] as TrackName[] })); }}
               className={`px-3 py-1.5 rounded-lg border font-medium transition-colors ${isDepot ? 'bg-orange-600 text-white border-orange-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
             >
               기지 작업
             </button>
           </div>
 
-          {/* 노선·방향 */}
+          {/* 노선 · 차단 선로 */}
           <div className="grid grid-cols-2 gap-4">
             {isDepot ? (
               <Field label="기지 *">
@@ -410,7 +411,15 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
               <Field label="노선 *">
                 <select
                   value={form.route_id ?? 0}
-                  onChange={(e) => set('route_id', Number(e.target.value))}
+                  onChange={(e) => {
+                    const newRouteId = Number(e.target.value);
+                    const newRoute = routes.find(r => r.id === newRouteId);
+                    const newTracks = availableTracks(newRoute?.default_track_count ?? 2);
+                    // 기존 선택된 선로가 새 노선에서 유효하지 않으면 첫 번째 선로로 초기화
+                    const validTracks = (form.tracks as TrackName[]).filter(t => newTracks.includes(t));
+                    set('route_id', newRouteId);
+                    set('tracks', validTracks.length > 0 ? validTracks : [newTracks[0]]);
+                  }}
                   className={SELECT}
                   required
                 >
@@ -421,29 +430,44 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
                 </select>
               </Field>
             )}
-            <Field label="방향 *">
-              <select
-                value={form.direction}
-                onChange={(e) => set('direction', e.target.value as 'UP' | 'DOWN' | 'BOTH')}
-                className={SELECT}
-              >
-                {isDepot ? (
-                  <>
-                    <option value="BOTH">전체 (상하선)</option>
-                    <option value="UP">상선 (UP)</option>
-                    <option value="DOWN">하선 (DOWN)</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="DOWN">하선 (DOWN)</option>
-                    <option value="UP">상선 (UP)</option>
-                    {form.block_type === POWER_CUT_TYPE && (
-                      <option value="BOTH">상하선 (BOTH)</option>
-                    )}
-                  </>
-                )}
-              </select>
-            </Field>
+            {/* 차단 선로 체크박스 */}
+            {(() => {
+              const selectedRoute = isDepot ? null : routes.find(r => r.id === form.route_id);
+              const trackCount = selectedRoute?.default_track_count ?? 2;
+              const trackOptions = isDepot ? (['상선', '하선'] as TrackName[]) : availableTracks(trackCount);
+              return (
+                <Field label="차단 선로 *">
+                  <div className="flex flex-wrap gap-x-3 gap-y-1.5 pt-1">
+                    {trackOptions.map(track => {
+                      const checked = (form.tracks as TrackName[]).includes(track);
+                      return (
+                        <label key={track} className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const current = form.tracks as TrackName[];
+                              if (e.target.checked) {
+                                set('tracks', [...current, track]);
+                              } else {
+                                const next = current.filter(t => t !== track);
+                                if (next.length > 0) set('tracks', next);
+                              }
+                            }}
+                            className="rounded"
+                          />
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                            checked
+                              ? track.startsWith('상') ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                              : 'bg-gray-100 text-gray-500'
+                          }`}>{track}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </Field>
+              );
+            })()}
           </div>
 
           {/* 기지 선로/구역명 */}

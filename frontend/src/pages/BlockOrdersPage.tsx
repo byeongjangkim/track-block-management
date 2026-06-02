@@ -11,7 +11,7 @@ import PdfImportModal from '../components/block/PdfImportModal';
 
 function formatTime(t: string) { return t.slice(0, 5); }
 
-const DIRECTION_LABEL: Record<string, string> = { UP: '상선', DOWN: '하선', BOTH: '전체' };
+function fmtTracks(tracks: string[]): string { return tracks.join(' · '); }
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function plusDays(n: number) {
@@ -350,10 +350,8 @@ export default function BlockOrdersPage() {
                     {routeMap[o.route_id] ?? '-'}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                      o.direction === 'UP' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
-                    }`}>
-                      {DIRECTION_LABEL[o.direction]}
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                      {fmtTracks(o.tracks)}
                     </span>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-gray-600">

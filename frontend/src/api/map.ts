@@ -84,9 +84,12 @@ export async function fetchRailSubstations(params: {
   return res.data;
 }
 
-export async function fetchAllRailRouteGeometry(lod = 'high'): Promise<RailRouteFeatureCollection> {
+export async function fetchAllRailRouteGeometry(
+  lod = 'high',
+  stationMode: 'center_only' | 'all_points' = 'center_only',
+): Promise<RailRouteFeatureCollection> {
   const res = await api.get<RailRouteFeatureCollection>('/map/rail-routes/all/geometry', {
-    params: { lod },
+    params: { lod, station_mode: stationMode },
   });
   return res.data;
 }
@@ -188,7 +191,8 @@ export interface BlockSegmentProps {
   rail_route_id: number | null;
   route_code: string | null;
   route_name: string | null;
-  direction: 'UP' | 'DOWN';
+  track: string;              // 차단 선로 이름: 상선|하선|상1|상2|상3|하1|하2|하3
+  route_track_count: number;  // 노선 선로 수 (물리적 위치 계산용)
   section_type: 'normal' | 'power_cut';
   start_km: number | null;
   end_km: number | null;
