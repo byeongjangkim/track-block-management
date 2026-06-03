@@ -787,10 +787,28 @@ def get_block_order_segments(
         if len(coords) < 2:
             continue
 
-        # 노선 선로 수 조회 (렌더링 시 물리적 위치 계산용)
+        # 노선 선로 수 조회: KP 구간 우선, 없으면 노선 기본값
+        # 2복선/3복선 구간에서 상1/상2 등을 정확한 선로 위치에 표시하기 위해
+        # rail_track_sections에서 해당 KP 중간점의 선로 수를 먼저 확인한다.
         route_track_count = 2
         if rail_route:
             route_track_count = rail_route.default_track_count or 2
+            # KP 범위가 있을 때 구간별 실제 선로 수 확인
+            _s_kp = start_kp if start_kp is not None else bo.start_km
+            _e_kp = end_kp   if end_kp   is not None else bo.end_km
+            if _s_kp is not None and _e_kp is not None:
+                mid_kp = (_s_kp + _e_kp) / 2
+                _sec = db.execute(
+                    text("""
+                        SELECT track_count FROM rail_track_sections
+                        WHERE rail_route_id = :rid
+                          AND start_kp <= :kp AND end_kp >= :kp
+                        LIMIT 1
+                    """),
+                    {"rid": rail_route.id, "kp": mid_kp},
+                ).fetchone()
+                if _sec:
+                    route_track_count = int(_sec.track_count)
 
         # tracks: 선로별 feature 1개씩 생성
         import json as _json

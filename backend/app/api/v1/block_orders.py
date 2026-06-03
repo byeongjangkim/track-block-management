@@ -18,6 +18,23 @@ POWER_CUT_BLOCK_TYPE = "전차선단전"
 router = APIRouter(prefix="/block-orders", tags=["차단명령"])
 
 
+def _enrich_route_name(order: BlockOrder, db: Session) -> BlockOrderResponse:
+    """BlockOrder ORM → BlockOrderResponse + route_name 채우기."""
+    resp = BlockOrderResponse.model_validate(order)
+    if resp.route_name is None:
+        # rail_route.name 우선 (경부고속선 등 신형)
+        if order.rail_route_id:
+            rail = db.query(RailRoute).filter(RailRoute.id == order.rail_route_id).first()
+            if rail:
+                resp.route_name = rail.name
+        # fallback: legacy route.name
+        if resp.route_name is None and order.route_id:
+            legacy = db.query(Route).filter(Route.id == order.route_id).first()
+            if legacy:
+                resp.route_name = legacy.name
+    return resp
+
+
 def _rail_route_id_from_legacy_route(db: Session, route_id: int | None) -> int | None:
     if route_id is None:
         return None
@@ -210,7 +227,8 @@ def list_block_orders(
         q = q.filter(BlockOrder.start_kp >= start_kp_from)
     if end_kp_to is not None:
         q = q.filter(BlockOrder.end_kp <= end_kp_to)
-    return q.order_by(BlockOrder.work_date, BlockOrder.start_time).all()
+    orders = q.order_by(BlockOrder.work_date, BlockOrder.start_time).all()
+    return [_enrich_route_name(o, db) for o in orders]
 
 
 @router.post("", response_model=BlockOrderResponse, status_code=status.HTTP_201_CREATED)
@@ -247,7 +265,7 @@ def create_block_order(
     db.add(order)
     db.commit()
     db.refresh(order)
-    return order
+    return _enrich_route_name(order, db)
 
 
 @router.get("/{order_id}", response_model=BlockOrderResponse)
@@ -259,7 +277,7 @@ def get_block_order(
     order = db.query(BlockOrder).filter(BlockOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="차단명령을 찾을 수 없습니다")
-    return order
+    return _enrich_route_name(order, db)
 
 
 @router.put("/{order_id}", response_model=BlockOrderResponse)
@@ -312,7 +330,7 @@ def update_block_order(
         setattr(order, key, value)
     db.commit()
     db.refresh(order)
-    return order
+    return _enrich_route_name(order, db)
 
 
 class BulkBlockOrderItem(BaseModel):

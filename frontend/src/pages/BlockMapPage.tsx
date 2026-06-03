@@ -778,7 +778,9 @@ export default function BlockMapPage() {
             {filteredBlockOrders.map((bo) => {
               const isSelected = selectedId === bo.id;
               const isOnMap    = onMapIds.has(bo.id);
-              const routeName  = routeMap.get(bo.route_id)?.name ?? `노선 #${bo.route_id}`;
+              const routeName  = (bo as any).route_name
+                ?? routeMap.get(bo.route_id)?.name
+                ?? (bo.route_id != null ? `노선 #${bo.route_id}` : '노선 미지정');
               return (
                 <button
                   key={bo.id}
@@ -815,7 +817,7 @@ export default function BlockMapPage() {
                     {bo.block_type === '전차선단전' ? (
                       <span className="truncate">{bo.section_note ?? 'KP 미지정'}</span>
                     ) : (
-                      <span>KP {bo.start_km}~{bo.end_km}km</span>
+                      <span>KP {bo.start_kp ?? bo.start_km}~{bo.end_kp ?? bo.end_km}km</span>
                     )}
                     <span
                       className="px-1 rounded text-white text-[9px] shrink-0"
@@ -893,7 +895,9 @@ export default function BlockMapPage() {
             >
               <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
                 <span className="font-semibold text-gray-800 text-xs truncate">
-                  {routeMap.get(selectedOrder.route_id)?.name ?? `노선 #${selectedOrder.route_id}`}
+                  {(selectedOrder as any).route_name
+                    ?? routeMap.get(selectedOrder.route_id)?.name
+                    ?? (selectedOrder.route_id != null ? `노선 #${selectedOrder.route_id}` : '노선 미지정')}
                 </span>
                 <span
                   className="px-1.5 py-0.5 rounded text-white text-[10px] font-medium shrink-0"
@@ -924,7 +928,7 @@ export default function BlockMapPage() {
               <span className="text-gray-800">
                 {selectedOrder.block_type === '전차선단전'
                   ? (selectedOrder.section_note ?? 'KP 미지정')
-                  : `KP ${selectedOrder.start_km}~${selectedOrder.end_km}km`}
+                  : `KP ${selectedOrder.start_kp ?? selectedOrder.start_km}~${selectedOrder.end_kp ?? selectedOrder.end_km}km`}
               </span>
               <span className="text-gray-400">작업 시간</span>
               <span className="text-gray-800">

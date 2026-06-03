@@ -153,6 +153,7 @@ class BlockOrderResponse(BaseModel):
     organization_id: int | None
     route_id: int | None
     rail_route_id: int | None
+    route_name: str | None = None   # 조인 조회 결과 (rail_route.name 우선, route.name fallback)
     tracks: list[str]
     start_km: float | None
     end_km: float | None
@@ -201,5 +202,6 @@ class BlockOrderResponse(BaseModel):
         if isinstance(v, str):
             return json.loads(v)
         return v
+
 
     model_config = {"from_attributes": True}

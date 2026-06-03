@@ -478,27 +478,42 @@ function isUpTrack(trackName: string): boolean {
 }
 
 /**
- * 선로 이름 → trackOffsetsPx 배열 내 인덱스.
- * 복선(2):   상선=0, 하선=1
- * 2복선(4):  상1=0, 상2=1, 하1=2, 하2=3
- * 3복선(6):  상1=0, 상2=1, 상3=2, 하1=3, 하2=4, 하3=5
+ * 선로 이름 → trackOffsetsSvg 배열 내 인덱스.
+ *
  * 단선(1):   상선=0
+ * 복선(2):   상선=0(-1.0), 하선=1(+1.0)
+ * 2복선(4):  상1=0(-3.0), 상2=1(-1.0), 하1=2(+1.0), 하2=3(+3.0)
+ * 3복선(6):  상1=0(-5.0), 상2=1(-3.0), 상3=2(-1.0), 하1=3(+1.0), 하2=4(+3.0), 하3=5(+5.0)
+ *
+ * fallback: 상 계열 → 최외방 상선(index=0), 하 계열 → 최외방 하선(index=trackCount-1)
  */
 function trackNameToIndex(trackName: string, trackCount: number): number {
   if (trackCount === 1) return 0;
+
   if (trackCount === 2) {
     if (trackName === '상선') return 0;
     if (trackName === '하선') return 1;
+    // 상1/상2 → 상선으로 처리, 하1/하2 → 하선으로 처리
     return isUpTrack(trackName) ? 0 : 1;
   }
+
   if (trackCount === 4) {
-    const map: Record<string, number> = { '상1': 0, '상2': 1, '하1': 2, '하2': 3 };
-    return map[trackName] ?? (isUpTrack(trackName) ? 0 : 2);
+    const MAP: Record<string, number> = { '상1': 0, '상2': 1, '하1': 2, '하2': 3 };
+    if (MAP[trackName] !== undefined) return MAP[trackName];
+    // 복선 이름 입력 시: 상선→최외방 상1(0), 하선→최외방 하2(3)
+    if (trackName === '상선') return 0;
+    if (trackName === '하선') return 3;
+    return isUpTrack(trackName) ? 0 : 3;
   }
+
   if (trackCount === 6) {
-    const map: Record<string, number> = { '상1': 0, '상2': 1, '상3': 2, '하1': 3, '하2': 4, '하3': 5 };
-    return map[trackName] ?? (isUpTrack(trackName) ? 0 : 3);
+    const MAP: Record<string, number> = { '상1': 0, '상2': 1, '상3': 2, '하1': 3, '하2': 4, '하3': 5 };
+    if (MAP[trackName] !== undefined) return MAP[trackName];
+    if (trackName === '상선') return 0;
+    if (trackName === '하선') return 5;
+    return isUpTrack(trackName) ? 0 : 5;
   }
+
   return isUpTrack(trackName) ? 0 : 1;
 }
 
@@ -536,8 +551,12 @@ function blockSegmentOffsetSvg(
     return outerPhysical + (isUp ? -extraOff : extraOff);
   }
   if (blockType === '보호지구작업') {
-    // 보호지구: 최외방에서 1.0×gap 외방 (사각형 중심)
-    const extraOff = TRACK_HALF_GAP_SVG * 1.0;
+    // 보호지구 사각형 배치:
+    //   최외방 선로에서 1×gap 이격(공백) 후 사각형 시작
+    //   사각형 높이 = 2×gap → 사각형 중심 = 최외방 + 1×gap(이격) + 1×gap(높이절반) = +2×gap
+    const pzHalfH = TRACK_HALF_GAP_SVG;      // 높이 = 2×gap → 절반 = 1×gap
+    const pzGap   = TRACK_HALF_GAP_SVG;      // 선로와 사각형 사이 이격
+    const extraOff = pzGap + pzHalfH;        // = 2×TRACK_HALF_GAP_SVG
     return outerPhysical + (isUp ? -extraOff : extraOff);
   }
 
@@ -1045,6 +1064,12 @@ export default function RailwayMap({
           .attr('stroke-width', capStrokeSvg(PROTECT_ZONE_SVG, k, capK));
         g.selectAll<SVGPathElement, unknown>('path.danger-zone')
           .attr('stroke-width', capStrokeSvg(DANGER_ZONE_SVG, k, capK));
+        // 보호지구작업 사각형 테두리 cap
+        g.selectAll<SVGPathElement, unknown>('path.pz-rect')
+          .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK));
+        // 해칭 선 굵기 = 외각선과 동일하게 cap 적용 (SVG 단위, zoom handler에서만 갱신)
+        d3.select(svgRef.current!).select('.pz-hatch-line')
+          .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK));
 
         // 줌 레벨에 따른 레이어 전환
         // 전국(< 1.5): 집계 배지만 표시, 선·마커·밴드 숨김
@@ -1526,18 +1551,16 @@ export default function RailwayMap({
     const catenaryCutLayer = g.select<SVGGElement>('.catenary-cuts');
     catenaryCutLayer.selectAll('*').remove();
     if (catenaryCutFeats.length > 0) {
-      // 히트 영역 (넓게 — SVG 단위)
+      // 히트 영역 — 해당 선로(track) 위에 표시
       catenaryCutLayer
         .selectAll<SVGPathElement, BlockSegmentFeature>('path.catenary-cut-hit')
         .data(catenaryCutFeats)
         .join('path')
         .attr('class', 'catenary-cut-hit')
-        .attr('d', (d) => {
-          const pts = (d.geometry.coordinates as [number, number][])
-            .map(([lon, lat]) => proj([lon, lat]))
-            .filter((p): p is [number, number] => p !== null);
-          return d3.line()(pts) ?? '';
-        })
+        .attr('d', (d) => buildOffsetPath(
+          d.geometry.coordinates as [number, number][],
+          d.properties.track, d.properties.route_track_count, proj
+        ))
         .attr('fill', 'none').attr('stroke', 'transparent')
         .attr('stroke-width', capStrokeSvg(CATENARY_STROKE_SVG, k, capK) * 8)
         .style('cursor', 'pointer')
@@ -1545,18 +1568,16 @@ export default function RailwayMap({
           event.stopPropagation();
           onBlockSegmentClick?.(d.properties.id);
         });
-      // 전차선단전 선 — SVG 단위, non-scaling-stroke 제거
+      // 전차선단전 선 — 해당 선로(상선/하선) 위에 buildOffsetPath로 정확히 표시
       catenaryCutLayer
         .selectAll<SVGPathElement, BlockSegmentFeature>('path.catenary-cut')
         .data(catenaryCutFeats)
         .join('path')
         .attr('class', 'catenary-cut')
-        .attr('d', (d) => {
-          const pts = (d.geometry.coordinates as [number, number][])
-            .map(([lon, lat]) => proj([lon, lat]))
-            .filter((p): p is [number, number] => p !== null);
-          return d3.line()(pts) ?? '';
-        })
+        .attr('d', (d) => buildOffsetPath(
+          d.geometry.coordinates as [number, number][],
+          d.properties.track, d.properties.route_track_count, proj
+        ))
         .attr('fill', 'none')
         .attr('stroke', CATENARY_CUT_COLOR_S)
         .attr('stroke-width', capStrokeSvg(CATENARY_STROKE_SVG, k, capK))
@@ -1741,85 +1762,71 @@ export default function RailwayMap({
 
     // ⑤ 보호지구작업 — 사각형 + 45도 사선 해칭
     // SVG <defs>에 해칭 패턴 등록 (이미 있으면 skip)
+    // 패턴: patternUnits="userSpaceOnUse" + vector-effect: non-scaling-stroke
+    // 해칭 패턴 — patternUnits="userSpaceOnUse"는 참조 요소의 로컬 좌표계(=D3 zoom 변환 후) 기준
+    // → 패턴 크기를 SVG 로컬 단위(화면픽셀 아님)로 설정해야 자동으로 zoom과 함께 스케일됨
+    // → vector-effect: non-scaling-stroke 사용 금지 (SVG 단위 렌더링과 충돌, CLAUDE.md 경고)
     const svgSel = d3.select(svgRef.current!);
     if (svgSel.select('defs #pz-hatch').empty()) {
       const defs = svgSel.select<SVGDefsElement>('defs').empty()
         ? svgSel.insert('defs', ':first-child')
         : svgSel.select<SVGDefsElement>('defs');
+      // 45° 해칭: 타일 s×s → 수직 간격 s/√2 = 선로 상하선 간격(2×TRACK_HALF_GAP)
+      // s = 2 × TRACK_HALF_GAP_SVG × √2 — SVG 로컬 단위, zoom과 함께 자동 스케일
+      const s = TRACK_HALF_GAP_SVG * 2 * Math.SQRT2;
       const pat = defs.append('pattern')
         .attr('id', 'pz-hatch')
         .attr('patternUnits', 'userSpaceOnUse')
-        .attr('patternTransform', `scale(${1 / k})`) // zoom에 맞춰 스케일
-        .attr('width', 8).attr('height', 8);
+        .attr('width', s).attr('height', s);
       pat.append('path')
-        .attr('d', 'M-2,2 l4,-4 M0,8 l8,-8 M6,10 l4,-4')
+        .attr('class', 'pz-hatch-line')
+        .attr('d', `M0,${s} L${s},0 M${-s*0.1},${s*0.1} L${s*0.1},${-s*0.1} M${s*0.9},${s*1.1} L${s*1.1},${s*0.9}`)
         .attr('stroke', TRACK_BLOCK_COLOR_S)
-        .attr('stroke-width', 1.5)
-        .attr('opacity', 0.75);
-    } else {
-      // 줌 변경 시 패턴 스케일 갱신
-      svgSel.select('#pz-hatch').attr('patternTransform', `scale(${1 / k})`);
+        .attr('stroke-width', ROUTE_STROKE_SVG)  // SVG 단위, zoom handler에서 cap 적용
+        .attr('fill', 'none')
+        .attr('opacity', 0.7);
     }
 
     if (protectionZoneFeats.length > 0 && k >= 1.5) {
-      // 보호지구 사각형 높이 = 2 × TRACK_HALF_GAP (SVG 단위)
       const pzHeight = TRACK_HALF_GAP_SVG * 2;
+
+      // buildOffsetPath와 동일한 오프셋 로직 — 기존 함수를 재사용하여 중복 제거
+      const makeOffsetPts = (coords: [number,number][], svgOff: number): [number,number][] => {
+        const pts = coords.map(c => proj(c)).filter((p): p is [number,number] => p !== null);
+        return pts.map((p, i) => {
+          let dx: number, dy: number;
+          if (i===0)                 { dx=pts[1][0]-pts[0][0]; dy=pts[1][1]-pts[0][1]; }
+          else if (i===pts.length-1) { dx=pts[i][0]-pts[i-1][0]; dy=pts[i][1]-pts[i-1][1]; }
+          else                       { dx=pts[i+1][0]-pts[i-1][0]; dy=pts[i+1][1]-pts[i-1][1]; }
+          const len=Math.sqrt(dx*dx+dy*dy);
+          if (len<1e-6) return p;
+          return [p[0]+(-dy/len)*svgOff, p[1]+(dx/len)*svgOff] as [number,number];
+        });
+      };
+
       pzLayer
         .selectAll<SVGPathElement, BlockSegmentFeature>('path.pz-rect')
         .data(protectionZoneFeats)
         .join('path')
         .attr('class', 'pz-rect')
         .attr('d', (d) => {
-          // 중심선 → 오프셋 경로 2개(상단/하단) → 직사각형 생성
           const track = d.properties.track;
           const rtc   = d.properties.route_track_count;
-          const centerSvg = blockSegmentOffsetSvg(track, rtc, 0, '보호지구작업');
-          const isUp = isUpTrack(track);
-          const half = pzHeight / 2;
-          const topSvg = centerSvg + (isUp ? -half : half);  // 외방
-          const botSvg = centerSvg + (isUp ?  half : -half); // 내방(선로 쪽)
-
-          const makePts = (off: number) => {
-            const coords = d.geometry.coordinates as [number, number][];
-            return coords.map(([lon, lat]) => {
-              const p = proj([lon, lat]);
-              if (!p) return null;
-              const pts = coords.map(c => proj(c as [number,number])).filter(Boolean) as [number,number][];
-              const idx = coords.indexOf([lon,lat]);
-              return p;
-            }).filter(Boolean) as [number,number][];
-          };
-
-          // 좌표 배열 → 오프셋 적용
-          const applyOffset = (svgOff: number): [number,number][] => {
-            const coords = d.geometry.coordinates as [number, number][];
-            const pts = coords.map(c => proj(c as [number,number])).filter((p): p is [number,number] => p !== null);
-            return pts.map((p, i) => {
-              let dx: number, dy: number;
-              if (i===0){ dx=pts[1][0]-pts[0][0]; dy=pts[1][1]-pts[0][1]; }
-              else if (i===pts.length-1){ dx=pts[i][0]-pts[i-1][0]; dy=pts[i][1]-pts[i-1][1]; }
-              else{ dx=pts[i+1][0]-pts[i-1][0]; dy=pts[i+1][1]-pts[i-1][1]; }
-              const len=Math.sqrt(dx*dx+dy*dy);
-              if (len<1e-6) return p;
-              const nx=-dy/len, ny=dx/len;
-              return [p[0]+svgOff*nx, p[1]+svgOff*ny] as [number,number];
-            });
-          };
-
-          const topPts = applyOffset(topSvg);
-          const botPts = applyOffset(botSvg);
-          if (topPts.length < 2 || botPts.length < 2) return '';
-
-          // 직사각형: topPts 순방향 + botPts 역방향
-          const fwd = topPts.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
-          const rev = [...botPts].reverse().map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
+          const center = blockSegmentOffsetSvg(track, rtc, 0, '보호지구작업');
+          const isUp   = isUpTrack(track);
+          const half   = pzHeight / 2;
+          const outerPts = makeOffsetPts(d.geometry.coordinates as [number,number][], center + (isUp ? -half : half));
+          const innerPts = makeOffsetPts(d.geometry.coordinates as [number,number][], center + (isUp ?  half : -half));
+          if (outerPts.length < 2 || innerPts.length < 2) return '';
+          const fwd = outerPts.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
+          const rev = [...innerPts].reverse().map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
           return `M ${fwd} L ${rev} Z`;
         })
         .attr('fill', 'url(#pz-hatch)')
         .attr('stroke', TRACK_BLOCK_COLOR_S)
         .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK))
         .attr('stroke-linecap', 'butt')
-        .attr('opacity', (d) => d.properties.id === selectedBlockId ? 1.0 : 0.8)
+        .attr('opacity', 0.85)   // zoom/선택 상태 무관 고정 투명도
         .style('cursor', 'pointer')
         .on('click', (event: MouseEvent, d: BlockSegmentFeature) => {
           event.stopPropagation();
