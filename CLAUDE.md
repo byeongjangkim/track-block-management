@@ -59,6 +59,7 @@ track-block-management/
 | 차단명령 | `/api/v1/block-orders/` |
 | 지도·GIS | `/api/v1/map/` |
 | 기준정보 | `/api/v1/rail-reference/` |
+| 기준정보 집계 | `/api/v1/rail-reference/routes/route-summaries` (노선별 역/시설물 수·오류) |
 | 시스템 설정 | `/api/v1/settings/` |
 | 어드민 | `/api/v1/admin/` |
 

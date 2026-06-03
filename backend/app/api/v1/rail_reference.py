@@ -700,6 +700,57 @@ def list_reference_routes(
     return items
 
 
+@router.get("/routes/route-summaries")
+def get_route_summaries(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """노선별 역/KP 및 시설물 집계 — 역/KP 관리·시설물 관리 목록 화면용"""
+    rows = db.execute(text("""
+        WITH sp AS (
+            -- rail_route_station_points 와 rail_stations(GPS) 조인
+            SELECT rsp.rail_route_id,
+                   COUNT(*) AS station_total,
+                   SUM(CASE WHEN rs.lat IS NOT NULL AND rs.lon IS NOT NULL THEN 1 ELSE 0 END) AS station_gps,
+                   SUM(CASE WHEN rsp.center_kp IS NULL OR rsp.yard_start_kp IS NULL OR rsp.yard_end_kp IS NULL
+                             OR (rsp.yard_start_kp > rsp.center_kp) OR (rsp.yard_end_kp < rsp.center_kp)
+                             OR (rsp.yard_start_kp > rsp.yard_end_kp) THEN 1 ELSE 0 END) AS station_error
+            FROM rail_route_station_points rsp
+            LEFT JOIN rail_stations rs ON rs.id = rsp.station_id
+            GROUP BY rsp.rail_route_id
+        ),
+        fac AS (
+            SELECT rail_route_id,
+                   COUNT(*) AS facility_total,
+                   SUM(CASE WHEN lat IS NOT NULL AND lon IS NOT NULL THEN 1 ELSE 0 END) AS facility_gps
+            FROM rail_facilities
+            GROUP BY rail_route_id
+        )
+        SELECT
+            rr.id,
+            rr.korail_route_code,
+            rr.name,
+            rr.line_type,
+            rr.start_station_name,
+            rr.end_station_name,
+            rr.start_kp,
+            rr.end_kp,
+            rr.is_active,
+            rr.default_track_count,
+            COALESCE(sp.station_total, 0) AS station_total,
+            COALESCE(sp.station_gps,   0) AS station_gps,
+            COALESCE(sp.station_error, 0) AS station_error,
+            COALESCE(fac.facility_total, 0) AS facility_total,
+            COALESCE(fac.facility_gps,   0) AS facility_gps
+        FROM rail_routes rr
+        LEFT JOIN sp  ON sp.rail_route_id  = rr.id
+        LEFT JOIN fac ON fac.rail_route_id = rr.id
+        ORDER BY rr.line_type DESC, rr.name
+    """)).mappings().fetchall()
+
+    return [dict(r) for r in rows]
+
+
 @router.get("/routes/{rail_route_id}/station-points")
 def list_route_station_points(
     rail_route_id: int,

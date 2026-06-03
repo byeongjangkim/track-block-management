@@ -8,11 +8,13 @@ import {
   fetchFacilityClassifications,
   fetchRailFacilities,
   fetchReferenceRoutes,
+  fetchRouteSummaries,
   updateRailFacility,
   type BulkUploadResult,
   type RailFacility,
   type RailFacilityClassification,
   type RailFacilityInput,
+  type RouteListSummary,
 } from '../api/railReference';
 
 type EditId = number | 'new' | null;
@@ -192,10 +194,164 @@ function buildPayload(row: EditRow, classification: RailFacilityClassification |
   };
 }
 
+// ── 노선 목록 (1단계) ─────────────────────────────────────────────────────────
+
+function FacilityRouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }) {
+  const [search, setSearch] = useState('');
+  const [lineFilter, setLineFilter] = useState<'all' | '고속선' | '일반선' | '기지'>('all');
+
+  const { data: routes = [], isLoading } = useQuery({
+    queryKey: ['route-summaries'],
+    queryFn: fetchRouteSummaries,
+    staleTime: 30_000,
+  });
+
+  const filtered = useMemo(() => routes.filter(r => {
+    if (lineFilter !== 'all' && r.line_type !== lineFilter) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      return r.name.toLowerCase().includes(q)
+        || (r.korail_route_code ?? '').toLowerCase().includes(q)
+        || (r.start_station_name ?? '').toLowerCase().includes(q)
+        || (r.end_station_name ?? '').toLowerCase().includes(q);
+    }
+    return true;
+  }), [routes, lineFilter, search]);
+
+  const totalFacility = routes.reduce((s, r) => s + r.facility_total, 0);
+
+  return (
+    <div className="h-full flex flex-col gap-4">
+      <div className="flex items-center gap-3 flex-wrap shrink-0">
+        <h1 className="text-lg font-semibold text-gray-800">시설물 관리</h1>
+        <input
+          type="text"
+          placeholder="노선명, 코드, 시종점 검색"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-64"
+        />
+        <select
+          value={lineFilter}
+          onChange={e => setLineFilter(e.target.value as typeof lineFilter)}
+          className="border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+        >
+          <option value="all">전체 구분</option>
+          <option value="고속선">고속선</option>
+          <option value="일반선">일반선</option>
+          <option value="기지">기지</option>
+        </select>
+        <span className="text-sm text-gray-400 ml-auto">
+          표시 {filtered.length.toLocaleString()}개 / 전체 {routes.length.toLocaleString()}개
+        </span>
+      </div>
+
+      <div className="flex gap-3 shrink-0">
+        {[
+          { label: '노선 수', val: routes.length, cls: 'bg-blue-50 text-blue-700' },
+          { label: '전체 시설물', val: totalFacility, cls: 'bg-green-50 text-green-700' },
+        ].map(item => (
+          <div key={item.label} className={`rounded-lg border px-4 py-2.5 ${item.cls}`}>
+            <div className="text-xs opacity-70">{item.label}</div>
+            <div className="text-lg font-bold">{item.val.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-auto border rounded-lg">
+        <table className="w-full text-sm border-collapse">
+          <thead className="bg-gray-50 sticky top-0">
+            <tr>
+              {['노선코드', '노선명', '구분', '시종점', 'KP 범위', '시설물 수', 'GPS'].map(h => (
+                <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 border-b whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && (
+              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-400">조회 중...</td></tr>
+            )}
+            {!isLoading && filtered.length === 0 && (
+              <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-400">검색 결과가 없습니다.</td></tr>
+            )}
+            {!isLoading && filtered.map(r => (
+              <tr key={r.id} onClick={() => onSelect(r)}
+                className="border-b hover:bg-blue-50 cursor-pointer transition-colors">
+                <td className="px-3 py-2.5 font-mono text-xs text-gray-500 whitespace-nowrap">{r.korail_route_code ?? '—'}</td>
+                <td className="px-3 py-2.5 font-medium text-gray-800 whitespace-nowrap">{r.name}</td>
+                <td className="px-3 py-2.5 whitespace-nowrap">
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${r.line_type === '고속선' ? 'bg-red-100 text-red-700' : r.line_type === '기지' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}>
+                    {r.line_type}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 text-gray-500 text-xs whitespace-nowrap">
+                  {r.start_station_name ?? '—'} → {r.end_station_name ?? '—'}
+                </td>
+                <td className="px-3 py-2.5 tabular-nums text-gray-500 text-xs whitespace-nowrap">
+                  {r.start_kp != null && r.end_kp != null ? `${r.start_kp.toFixed(1)}~${r.end_kp.toFixed(1)}` : '—'}
+                </td>
+                <td className="px-3 py-2.5 tabular-nums text-center">
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${r.facility_total > 0 ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
+                    {r.facility_total}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 tabular-nums text-center">
+                  <span className="px-2 py-0.5 rounded-full text-xs bg-slate-50 text-slate-600">{r.facility_gps}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── 시설물 상세 (2단계) — 기존 로직 래핑 ─────────────────────────────────────
+
+function FacilityDetailWrapper({
+  initialRouteId,
+  onBack,
+}: {
+  initialRouteId: number;
+  onBack: () => void;
+}) {
+  return <FacilitiesDetailPage initialRouteId={initialRouteId} onBack={onBack} />;
+}
+
+// ── 메인 ─────────────────────────────────────────────────────────────────────
+
 export default function FacilitiesAdminPage() {
+  const [selectedListRoute, setSelectedListRoute] = useState<RouteListSummary | null>(null);
+
+  if (selectedListRoute) {
+    return (
+      <div className="h-full flex flex-col p-6 overflow-hidden">
+        <FacilityDetailWrapper
+          initialRouteId={selectedListRoute.id}
+          onBack={() => setSelectedListRoute(null)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col p-6 overflow-hidden">
+      <FacilityRouteListView onSelect={setSelectedListRoute} />
+    </div>
+  );
+}
+
+function FacilitiesDetailPage({
+  initialRouteId,
+  onBack,
+}: {
+  initialRouteId: number;
+  onBack: () => void;
+}) {
   const qc = useQueryClient();
 
-  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(initialRouteId);
   const [majorFilter, setMajorFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [editingId, setEditingId] = useState<EditId>(null);
@@ -373,8 +529,14 @@ export default function FacilitiesAdminPage() {
   }
 
   return (
-    <div className="h-full flex flex-col p-6 gap-4 overflow-hidden">
+    <div className="h-full flex flex-col gap-4 overflow-hidden">
       <div className="flex items-center gap-3 shrink-0 flex-wrap">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium shrink-0"
+        >
+          ← 목록
+        </button>
         <h1 className="text-lg font-semibold text-gray-800">시설물 관리</h1>
         <select
           value={selectedRouteId ?? ''}

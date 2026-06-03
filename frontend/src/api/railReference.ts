@@ -209,6 +209,32 @@ export interface RailFacilityInput {
   note?: string | null;
 }
 
+// ── 노선별 역/KP·시설물 집계 (목록 화면용) ────────────────────────────────
+export interface RouteListSummary {
+  id: number;
+  korail_route_code: string;
+  name: string;
+  line_type: string;
+  start_station_name: string | null;
+  end_station_name: string | null;
+  start_kp: number | null;
+  end_kp: number | null;
+  is_active: boolean;
+  default_track_count: number;
+  // 역/KP
+  station_total: number;
+  station_gps: number;
+  station_error: number;
+  // 시설물
+  facility_total: number;
+  facility_gps: number;
+}
+
+export async function fetchRouteSummaries(): Promise<RouteListSummary[]> {
+  const res = await api.get<RouteListSummary[]>('/rail-reference/routes/route-summaries');
+  return res.data;
+}
+
 export async function fetchReferenceSummary(): Promise<ReferenceSummary> {
   const res = await api.get<ReferenceSummary>('/rail-reference/summary');
   return res.data;
