@@ -13,6 +13,7 @@ import {
   resetSetting,
   resetAllSettings,
   type SettingItem,
+  type AllSettings,
 } from '../api/settings';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -165,13 +166,116 @@ function CategorySection({
   );
 }
 
+// ── 선 두께 포화 배율 서브섹션 ───────────────────────────────────────────────
+
+function StrokeCapZoomSection({
+  currentValue,
+  onSaved,
+}: {
+  currentValue: number;
+  onSaved: () => void;
+}) {
+  const qc = useQueryClient();
+  const [value, setValue] = useState(currentValue);
+  const isDirty = value !== currentValue;
+
+  const saveMut = useMutation({
+    mutationFn: () => updateSetting('map_settings', 'stroke_cap_zoom', String(value)),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['system-settings'] }); onSaved(); },
+  });
+  const resetMut = useMutation({
+    mutationFn: () => resetSetting('map_settings', 'stroke_cap_zoom'),
+    onSuccess: () => {
+      setValue(5);
+      qc.invalidateQueries({ queryKey: ['system-settings'] });
+      onSaved();
+    },
+  });
+
+  // 슬라이더 값별 화면 픽셀 미리보기 계산
+  const routePx  = (0.4 * value).toFixed(1);
+  const blockPx  = (0.7 * value).toFixed(1);
+
+  return (
+    <div className="mt-6 pt-5 border-t border-gray-100">
+      <p className="text-sm font-medium text-gray-800 mb-1">선 두께 포화 배율 (k)</p>
+      <p className="text-xs text-gray-500 mb-4">
+        이 줌 배율(k) 이상에서 노선·차단선의 화면 픽셀 두께가 고정됩니다.<br />
+        낮을수록 더 일찍 두께가 고정되어 얇게 유지됩니다 (권장: 3~8).
+      </p>
+
+      <div className="flex items-center gap-5">
+        {/* 슬라이더 */}
+        <div className="flex-1">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span>얇음 (k=2)</span>
+            <span className="font-semibold text-blue-600">현재 k={value}</span>
+            <span>두꺼움 (k=20)</span>
+          </div>
+          <input
+            type="range"
+            min={2} max={20} step={0.5}
+            value={value}
+            onChange={(e) => setValue(parseFloat(e.target.value))}
+            className="w-full accent-blue-600"
+          />
+          {/* 눈금 표시 */}
+          <div className="flex justify-between text-xs text-gray-300 mt-0.5 px-0.5">
+            {[2,4,6,8,10,12,14,16,18,20].map(v => (
+              <span key={v} className={v === Math.round(value) ? 'text-blue-400 font-bold' : ''}>{v}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* 미리보기 */}
+        <div className="shrink-0 bg-gray-50 border rounded-lg px-4 py-3 text-xs text-center w-36">
+          <div className="text-gray-500 mb-2">k={value} 이상 고정</div>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <div style={{ height: `${Math.min(8, parseFloat(routePx))}px`, width: 40, backgroundColor: '#1e40af', borderRadius: 2 }} />
+              <span className="text-gray-600">노선 {routePx}px</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div style={{ height: `${Math.min(8, parseFloat(blockPx))}px`, width: 40, backgroundColor: '#ca8a04', borderRadius: 2 }} />
+              <span className="text-gray-600">차단 {blockPx}px</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          onClick={() => saveMut.mutate()}
+          disabled={!isDirty || saveMut.isPending}
+          className={`px-4 py-1.5 text-sm rounded-lg font-medium transition-colors ${
+            isDirty ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+          }`}
+        >
+          {saveMut.isPending ? '저장 중…' : '저장'}
+        </button>
+        {currentValue !== 5 && (
+          <button
+            onClick={() => { if (confirm('기본값(5)으로 복원하시겠습니까?')) resetMut.mutate(); }}
+            disabled={resetMut.isPending}
+            className="px-3 py-1.5 text-sm border rounded-lg text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+          >
+            기본값(5) 복원
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 지도 설정 섹션 ────────────────────────────────────────────────────────────
 
 function MapSettingsSection({
   currentMode,
+  settings,
   onSaved,
 }: {
   currentMode: 'center_only' | 'all_points';
+  settings: AllSettings | undefined;
   onSaved: () => void;
 }) {
   const qc = useQueryClient();
@@ -283,6 +387,12 @@ function MapSettingsSection({
             )}
           </div>
         </div>
+
+        {/* 선 두께 포화 배율 슬라이더 */}
+        <StrokeCapZoomSection
+          currentValue={parseFloat(settings?.map_settings?.find(i => i.key === 'stroke_cap_zoom')?.value ?? '5') || 5}
+          onSaved={onSaved}
+        />
       </div>
     </section>
   );
@@ -379,6 +489,7 @@ export default function SystemSettingsPage() {
           {/* 지도 설정 — 역 좌표 모드 */}
           <MapSettingsSection
             currentMode={(settings?.map_settings?.find(i => i.key === 'station_points_mode')?.value ?? 'center_only') as 'center_only' | 'all_points'}
+            settings={settings}
             onSaved={async () => {
               qc.invalidateQueries({ queryKey: ['system-settings'] });
               await loadSettings();

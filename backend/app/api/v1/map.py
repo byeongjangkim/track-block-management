@@ -598,9 +598,21 @@ def _rail_kp_range_coords(
         return []
 
     coords: list[list[float]] = []
+
+    # ── 맥락 앵커 포함 (법선 방향 오차 방지) ─────────────────────────────
+    # buildOffsetPath는 각 포인트의 수직 방향을 이웃 포인트로 계산한다.
+    # 블록 시작점의 앞 앵커(start 직전)가 없으면 노선 경로와 법선 방향이 달라져
+    # 오프셋 위치가 어긋난다. → start 직전 앵커 1개를 맥락으로 선행 추가.
+    before_rows = [r for r in rows if r.kp <= start]
+    if before_rows:
+        prev = before_rows[-1]
+        coords.append([prev.lon, prev.lat])
+
     start_pt = _interpolate_rail_kp(db, rail_route_id, start, center_only=center_only)
     if start_pt:
-        coords.append([start_pt[1], start_pt[0]])
+        coord = [start_pt[1], start_pt[0]]
+        if not coords or coords[-1] != coord:
+            coords.append(coord)
 
     for r in rows:
         if start < r.kp < end:
@@ -611,6 +623,14 @@ def _rail_kp_range_coords(
     end_pt = _interpolate_rail_kp(db, rail_route_id, end, center_only=center_only)
     if end_pt:
         coord = [end_pt[1], end_pt[0]]
+        if not coords or coords[-1] != coord:
+            coords.append(coord)
+
+    # end 직후 앵커 1개도 추가 (종료점 법선 오차 방지)
+    after_rows = [r for r in rows if r.kp > end]
+    if after_rows:
+        nxt = after_rows[0]
+        coord = [nxt.lon, nxt.lat]
         if not coords or coords[-1] != coord:
             coords.append(coord)
 

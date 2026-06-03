@@ -38,6 +38,13 @@ def _is_valid_value(category: str, key: str, value: str) -> tuple[bool, str]:
     elif category == 'map_settings':
         if key == 'station_points_mode' and value not in ('center_only', 'all_points'):
             return False, "station_points_mode는 'center_only' 또는 'all_points'여야 합니다"
+        if key == 'stroke_cap_zoom':
+            try:
+                v = float(value)
+                if not (2 <= v <= 20):
+                    return False, "stroke_cap_zoom은 2~20 범위의 숫자여야 합니다"
+            except ValueError:
+                return False, "stroke_cap_zoom은 숫자여야 합니다"
     return True, ""
 
 

@@ -85,6 +85,7 @@ interface SettingsState {
   dangerColors:       DangerColors;
   facilityColors:     FacilityColors;
   stationPointsMode:  StationPointsMode; // 역 좌표 모드
+  strokeCapZoom:      number;            // 선 두께 포화 배율 (기본 5)
   loadSettings:       () => Promise<void>;
 }
 
@@ -100,6 +101,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   dangerColors:      DEFAULT_DANGER_COLORS,
   facilityColors:    DEFAULT_FACILITY_COLORS,
   stationPointsMode: 'center_only',
+  strokeCapZoom:     5,
 
   loadSettings: async () => {
     try {
@@ -112,10 +114,15 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       const rawMode = ms?.find(i => i.key === 'station_points_mode')?.value;
       const stationMode: StationPointsMode =
         rawMode === 'all_points' ? 'all_points' : 'center_only';
+
+      const rawCap = ms?.find(i => i.key === 'stroke_cap_zoom')?.value;
+      const strokeCapZoom = rawCap ? Math.min(20, Math.max(2, parseFloat(rawCap) || 5)) : 5;
+
       set({
         loaded: true,
         raw:    data,
         stationPointsMode: stationMode,
+        strokeCapZoom,
         routeColors: {
           highway:        pick(rc, 'highway',         DEFAULT_ROUTE_COLORS.highway),
           electrified:    pick(rc, 'electrified',     DEFAULT_ROUTE_COLORS.electrified),

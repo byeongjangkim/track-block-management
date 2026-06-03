@@ -17,7 +17,7 @@ interface Props {
 }
 
 const ALL_FIELDS    = ['시설', '전기', '건축'];
-const BLOCK_TYPES   = ['선로차단', '임시완속', '속도제한', '작업구간설정', '전차선단전'];
+const BLOCK_TYPES   = ['선로차단', '전차선단전', '작업구간설정', '보호지구작업', '임시완속', '속도제한'];
 const POWER_CUT_TYPE = '전차선단전';
 const WORK_TYPES    = [
   { value: '인력', label: '인력작업', desc: '밀차 등 인력·공기구류' },

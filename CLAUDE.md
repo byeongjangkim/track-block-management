@@ -5,24 +5,24 @@ KORAIL 전국 선로차단작업 승인 내역 통합 관리 웹 앱.
 
 ---
 
-## 문서 구조 정책
-
-- 이 파일은 **핵심 개념 + 개발 규칙 전체**를 담는다. 루트 CLAUDE.md 하나로 관리한다.
-- 구현 세부사항(DB 스키마 전체, GIS 파이프라인)은 `docs/` 참조 문서에 위임한다.
-- 코드 수정 후 → 이 파일만 업데이트한다.
-
----
-
-## 개발 환경 및 포트
+## 개발 환경
 
 | 항목 | 값 |
 |---|---|
 | 서버 | MacBook M2 14 (arm64, macOS 15, 사내망 LAN) |
-| Python | 3.12 |
-| Node.js | 22 |
+| Python | 3.12 / Node.js 22 |
 | 백엔드 포트 | **7000** |
 | 프론트엔드 포트 | **7001** |
-| DB | `backend/db.sqlite3` (SQLite, Phase 1) |
+| DB | `backend/db.sqlite3` (SQLite) |
+
+```bash
+# 백엔드
+cd backend && source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload
+
+# 프론트엔드
+cd frontend && npm run dev
+```
 
 ---
 
@@ -34,72 +34,44 @@ track-block-management/
 ├── frontend/       ← React SPA
 ├── maps/           ← GIS 파이프라인
 ├── database/       ← DB 시드 데이터
-├── scripts/        ← 유틸리티 스크립트
-└── docs/           ← 참조 문서 (DATABASE.md, MAPS.md 등)
+└── docs/           ← 참조 문서
 ```
 
 ---
 
-## 기술 스택 요약
+## 기술 스택
 
 | 계층 | 기술 |
 |---|---|
 | 백엔드 | FastAPI + SQLAlchemy 2.x (SQLite) + Alembic + JWT |
 | 프론트엔드 | React 18 + TypeScript + Vite + D3.js v7 + Tailwind CSS v4 |
-| GIS | `rail_computed_geometry` (KP 보간, 77노선) + 정적 GeoJSON 지도 |
+| GIS | D3 geoMercator + rail_baseline_points KP 보간 |
 
 ---
 
-## 백엔드 개발
-
-### 서버 실행
-
-```bash
-cd backend
-source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload
-```
-
-### 새 패키지 추가 — 필수 4단계
-
-```bash
-pip install <패키지명>
-# requirements.txt에 추가 (직접 편집)
-python3 -c "import app.main; print('import OK')"
-curl -m 5 http://localhost:7000/api/health
-```
-
-### 주요 API 카테고리
+## 주요 API
 
 | 카테고리 | 접두사 |
 |---|---|
 | 인증 | `/api/v1/auth/` |
-| 조직·관할구간 | `/api/v1/organizations/` |
-| 노선·시설물 | `/api/v1/routes/`, `/api/v1/facilities/` |
+| 조직 | `/api/v1/organizations/` |
+| 노선 | `/api/v1/routes/` (default_track_count 포함) |
 | 차단명령 | `/api/v1/block-orders/` |
-| 문서·PDF | `/api/v1/documents/` |
 | 지도·GIS | `/api/v1/map/` |
 | 기준정보 | `/api/v1/rail-reference/` |
-| 시설물 관리·어드민 | `/api/v1/admin/` |
-| **시스템 설정** | `/api/v1/settings/` |
+| 시스템 설정 | `/api/v1/settings/` |
+| 어드민 | `/api/v1/admin/` |
 
 ---
 
-## 프론트엔드 개발
-
-### 주요 파일
+## 프론트엔드 주요 파일
 
 | 파일 | 역할 |
 |---|---|
-| `src/App.tsx` | React Router 라우트 + RequireAuth 가드 |
-| `src/pages/BlockMapPage.tsx` | 차단현황도 ★ 메인 (`?date=YYYY-MM-DD&block_id=N`) |
-| `src/components/map/RailwayMap.tsx` | D3.js 전국 노선도 |
-| `src/components/common/Layout.tsx` | 헤더 네비게이션 (역할별 메뉴) |
-| `src/store/authStore.ts` | Zustand 로그인 상태 |
-| `src/store/settingsStore.ts` | Zustand 시스템 설정 (색상 + `stationPointsMode`) |
-| `src/api/map.ts` | geometry(`station_mode` 파라미터), org-boundaries, block-segments |
-| `src/api/settings.ts` | 시스템 설정 CRUD API |
-| `src/pages/SystemSettingsPage.tsx` | 색상 + 지도 설정 관리 페이지 (superuser) |
+| `src/pages/BlockMapPage.tsx` | 차단현황도 메인 (`?date=YYYY-MM-DD&block_id=N`) |
+| `src/components/map/RailwayMap.tsx` | D3.js 지도 렌더링 (SVG 월드 단위 기반) |
+| `src/store/settingsStore.ts` | 색상·stationPointsMode·strokeCapZoom 전역 상태 |
+| `src/pages/SystemSettingsPage.tsx` | 시스템 설정 (superuser 전용) |
 
 ### 메뉴 구조
 
@@ -109,341 +81,275 @@ curl -m 5 http://localhost:7000/api/health
 | 차단명령 | `/block-orders` | 전체 |
 | 캘린더 | `/calendar` | 전체 |
 | 기준정보 관리 | `/admin/reference` | org_admin+ |
-| 시스템 관리 (드롭다운) | — | superuser |
-| &nbsp;&nbsp;└ 사용자 관리 | `/admin/users` | superuser |
-| &nbsp;&nbsp;└ 시스템 설정 | `/admin/settings` | superuser |
+| 시스템 관리 → 사용자·설정 | `/admin/users`, `/admin/settings` | superuser |
 
 ---
 
-## D3 렌더링 — 절대 규칙
+## D3 렌더링 아키텍처
 
-**한국 지도 (절대 변경 금지):**
-- `GET /api/v1/map/sigungu?level=2` → 시도(17개) + 시군구(255개) 동시 로드
-- 시도: `SIDO_FILLS` 4색 채움 (투명도 0.15) + `stroke '#6b8299'` 1.0px
-- `vector-effect: non-scaling-stroke` 필수
+### ❶ SVG 월드 단위 렌더링 원칙
 
-### D3 레이어 순서 (아래→위)
+**핵심**: 지도(시군구) + 철도노선 + 차단구간이 **하나의 SVG 좌표계**에서 D3 zoom transform과 함께 자연스럽게 스케일링.
 
 ```
-sigungu-background  (배경 지도)
-sigungu-labels      (시군구 경계)
-tunnel-bridge       (터널·교량 심볼 — routes 위에 표시)
-routes-computed     (노선선)
-org-boundaries      (관할 구간)
-danger-zones        (위험/보호구간)
-catenary-cuts       (전차선단전 녹색)
-block-bands         (병행작업 집합 밴드 LOD2)
-block-segments      (선로차단 노란)
-block-route-badges  (zoom<1.5 배지)
-block-markers       (◆ 위험등급 마커)
-facility-segments   (시설물 LineString 히트 영역)
-facility-points     (역·시설물 Point)
+D3 geoMercator scale=12180 (Korea 기준):
+  1 SVG unit ≈ 418m
+  화면 픽셀 = SVG unit × zoom.k
 ```
 
-### 노선 색상 체계
+**SVG 단위 상수** (`RailwayMap.tsx`):
+```typescript
+TRACK_HALF_GAP_SVG  = 1.0               // 선로 반간격
+ROUTE_STROKE_SVG    = 0.4               // 노선 중심선 두께
+BLOCK_STROKE_SVG    = ROUTE_STROKE_SVG * 2  // 차단구간 = 노선의 2배 (0.8)
+CATENARY_STROKE_SVG = 1.0               // 전차선단전
+LANE_GAP_SVG        = 0.3               // 병행 레인 간격
+DANGER_ZONE_SVG     = 8.0               // 위험지구
+PROTECT_ZONE_SVG    = 16.0              // 보호지구
+ORG_BOUNDARY_SVG    = 3.0               // 관할구간
+```
 
-| 구분 | 색상 | 코드 |
+### ❷ Stroke Soft Cap (`strokeCapZoom`)
+
+`k ≤ capZoom`: 자연 성장, `k > capZoom`: 화면 픽셀 고정.
+
+```typescript
+function capStrokeSvg(svgVal, k, capZoom) {
+  return svgVal * Math.min(1, capZoom / k);
+}
+```
+
+- 기본 capZoom = **5** (시스템 설정에서 2~20 조정 가능)
+- **적용 대상**: zoom handler + 각 useEffect 렌더링 양쪽 모두 적용 필수
+- **⚠️ useEffect에서 누락하면**: selectedBlockId 변경 시(클릭/선택해제) 두께가 달라짐
+- **⚠️ 새 레이어 추가 시**: zoom handler AND useEffect 양쪽에 capStrokeSvg 추가 필수
+
+zoom k=5 기준 화면 픽셀:
+
+| 요소 | SVG 단위 | 고정 픽셀 |
 |---|---|---|
-| 고속선 (전차선 있음) | 적색 | `#dc2626` |
-| 일반선 + 전철화 | 주황 | `#f97316` |
-| 일반선 + 비전철 | 회색 | `#9ca3af` |
-| **전차선단전** 구간 오버레이 | **녹색** | `#16a34a` |
-| **선로차단** | **앰버-노란** | `#ca8a04` |
+| 노선 중심선 | 0.4 | 2px |
+| 차단구간 | 0.8 | 4px |
+| 전차선단전 | 1.0 | 5px |
 
-노선 색상은 `rail_routes.default_has_catenary` + `rail_track_sections.has_catenary` (구간별 예외) 양쪽으로 결정됨.
-- zoom < 1.5 포함 모든 줌에서 구간별 `has_catenary` 반영 (단일 선이지만 구간별 색상 분리)
+### ❸ 레이어 순서 (아래→위)
 
-**색상 커스터마이징**: `system_settings` 테이블 값 → `settingsStore` → D3 렌더링
-- 변경 후 새로고침 시 반영 (실시간 아님)
-- 기본값 복원: `POST /api/v1/settings/{category}/{key}/reset`
-- 전체 복원: `POST /api/v1/settings/reset-all`
+```
+sigungu-background    배경 지도
+sigungu-labels        시군구 경계
+routes-computed       노선선
+tunnel-bridge         터널·교량 심볼
+org-boundaries        관할 구간
+danger-zones          위험/보호구간
+catenary-cuts         전차선단전 녹색
+block-bands           병행작업 집합 밴드 (LOD2)
+protection-zone-works 보호지구작업 사각형+해칭
+block-segments        선로차단 노란
+block-route-badges    zoom<1.5 집계 배지
+block-markers         ◆ 분야별 마커
+facility-segments     시설물 LineString 히트 영역
+facility-points       역·시설물 Point
+```
 
-### 복선 상·하선 간격 (TRACK_HALF_GAP)
+### ❹ 차단작업 표시 규칙
 
-zoom 배율별 전체 간격 (상선↔하선 중심 간):
+| block_type | 표시 위치 | 표시 방법 |
+|---|---|---|
+| `전차선단전` | 노선 위 직접 | 녹색 실선 |
+| `선로차단` | 노선 위 직접 | 노란 실선, BLOCK_STROKE_SVG |
+| `작업구간설정` | 최외방 선로 +0.5×gap 외방 | 노란 실선 (차단 없는 인력/기계) |
+| `보호지구작업` | 최외방 선로 +1.0×gap 외방 | 사각형 + 45도 사선 해칭 (높이=2×gap) |
+| `임시완속`, `속도제한` | 노선 위 직접 | 노란 점선 |
 
-| 줌 | 전체 간격 | 상선 위치 | 하선 위치 |
-|---|---|---|---|
-| 1.5 | 4px | -2px | +2px |
-| 3 | 6px | -3px | +3px |
-| 6 | 8px | -4px | +4px |
-| 10 | 10px | -5px | +5px |
-| 20 | 12px | -6px | +6px |
-| 30 | 14px | -7px | +7px |
+**선 끝 처리**: `stroke-linecap='butt'` (직사각형, KP 범위와 정확히 일치)
 
-- `trackHalfGapPx(zoomK)` 함수가 로그 보간으로 계산
-- 선로차단선은 `blockSegmentOffsetSvg()` 가 선로 이름 → 물리 위치 변환 → 선로 위에 정확히 겹침
+**레인 배정 원칙**: KP 범위가 실제로 겹치는 블록만 다른 레인으로 분리.  
+KP가 겹치지 않는 블록은 항상 lane=0 (선로 위 직접 표시).
+```
+// kpOverlaps(a, b): start_kp/end_kp 겹침 여부로 레인 배정 결정
+```
 
-### 차단구간 선 두께 (zoom 반응)
+### ❺ ◆ 분야 마커
 
-`laneWidthPx(k) = min(10, max(3, 3 + log₂(k)))`  
-zoom 증가에 따라 로그적으로 두꺼워짐:
-
-| zoom | 두께 |
+| 분야 | 색상 |
 |---|---|
-| 1.5 | ~3.6px |
-| 4 | 5px |
-| 9 | ~6.2px |
-| 20 | ~7.3px |
+| 시설 | `#ca8a04` 노란 |
+| 전기 | `#16a34a` 녹색 |
+| 건축 | `#7c3aed` 보라 |
 
-### 다복선(2복선·3복선) 선로 간격 — LOD 확장
+- 위치: 해당 선로에서 **1.0×TRACK_HALF_GAP 외방**
+- 크기: s=10 (미선택), s=14 (선택) — `scale(1/k)` 화면 고정
 
-- zoom ≤ 5.8: 압축 모드 — 복선과 동일 스팬 (지도 산만함 방지)
-- zoom 5.8→20: 선형 보간으로 점진적 확장
-- zoom ≥ 20: **완전 확장** — 선로 간 간격 = 복선 상하선 간격(2×half)과 동일
+### ❻ KP 보간 법선 방향 오차 방지
 
-| zoom | 복선 스팬 | 2복선 스팬 | 3복선 스팬 |
-|---|---|---|---|
-| ≤ 5.8 | 기준 | 동일 | 동일 |
-| ~10 | 기준 | 30% 확장 | 30% 확장 |
-| ≥ 20 | 기준 | **3× 기준** | **5× 기준** |
+`_rail_kp_range_coords`는 블록 KP 범위 앞뒤로 맥락 앵커 1개씩 포함하여 반환.  
+`buildOffsetPath`는 전체 좌표로 법선을 계산하되 맥락 앵커(첫·마지막 점)는 렌더링 제외.
 
-### 차단 유형별 시각화
+```
+// 이유: 블록 시작점의 "이전 이웃" 앵커가 없으면 노선 경로와 법선 방향이 달라
+//       동일 +1.0 SVG 오프셋을 적용해도 선로 밖으로 이탈함.
+```
 
-| block_type | 유형 | 렌더링 |
-|---|---|---|
-| **선로차단** | 선로차단 | 앰버-노란, 해당 선로(tracks) 위, 실선 두꺼움 |
-| 임시완속, 속도제한 | 선로차단(부분) | 앰버-노란, 장대시 대시 |
-| 작업구간설정 | 선로변 작업 | 앰버-노란, 단대시 대시 |
-| 전차선단전 | 전차선 차단 | **녹색, 노선 위 직접 표시** (별도 catenary-cuts 레이어) |
-
-**두께 위계**: 선로차단(노란) > 전차선단전(녹색) > 노선도
-
-### 분야별 다중 레인
-
-같은 선로에 여러 분야 차단이 겹치면 레인을 나눔:
-- 우선순위: 시설(0) → 전기(1) → 건축(2)
-- 선로 구분: `tracks` 필드의 선로 이름으로 물리 위치 결정 (복선 좌=상선, 우=하선)
-
-### 줌 배율별 레이어 전환
+### ❼ 줌 배율별 레이어 전환
 
 | zoom | 표시 |
 |---|---|
-| < 1.5 | 노선별 집계 배지 (건수 원) — **클릭 시 zoom=2.5로 fly-to** |
-| 1.5 ~ 4 | 개별 레인 선분 + 집합 밴드 |
-| ≥ 4 | 개별 레인 선분 + ◆ 마커 (분야 약자) |
+| < 1.5 | 배지만 (클릭 시 zoom=2.5 fly-to) |
+| 1.5 ~ 4 | 선분 + 밴드 |
+| ≥ 4 | 선분 + ◆ 마커 |
 
-**배지 클릭**: D3 이벤트에서 `zoomRef.current.transform`으로 zoom=2.5, 배지 중심 700ms 애니메이션
+### ❽ 색상 체계
 
-### 시설물 표시 기준
+| 구분 | 기본값 | 설정 키 |
+|---|---|---|
+| 고속선 | `#dc2626` | `route_colors.highway` |
+| 일반선 전철화 | `#f97316` | `route_colors.electrified` |
+| 일반선 비전철 | `#9ca3af` | `route_colors.non_electrified` |
+| 전차선단전 | `#16a34a` | `route_colors.catenary_cut` |
+| 선로차단 | `#ca8a04` | `block_colors.track_block` |
 
-**역 (zoom 기준):**
-- `ZOOM_STATION=0.8`: 관리역
-- `ZOOM_STATION2=3`: 보통역·무인역·신호장·신호소
-
-**구조물 LineString:**
-- `ZOOM_SEGMENT=3`: 표시 시작
-
-**전기설비·건널목·분기:**
-- `ZOOM_DETAIL=8`: 표시 시작
+모든 색상은 `system_settings` → `settingsStore` → D3 렌더링 (새로고침 후 반영).
 
 ---
 
-## ⚠️ 터널·교량 심볼 렌더링 규칙 (반복 실수 금지)
+## ⚠️ 터널·교량 심볼 — 반복 실수 방지
 
-### 관점
-
-터널·교량은 **지리 정보가 아닌 철도 시설물**로 다룬다.  
-각 선로(상선/하선) 위에 표시하며, 해당 구간의 선로가 터널/교량에 있음을 나타낸다.
+터널·교량은 SVG 단위 기반으로 렌더링 (`buildTBSymbol` 함수, `zoomK` 파라미터 없음).
 
 ### bore_type 의미
 
-| bore_type | 적용 | 심볼 위치 |
-|---|---|---|
-| `복선` (기본) | 상·하선이 하나의 구조물 안에 있음 | 양쪽 선로를 감싸는 하나의 심볼 |
-| `단선_상선` | 상선 전용 단선 터널/교량 | 상선 위치에만 |
-| `단선_하선` | 하선 전용 단선 터널/교량 | 하선 위치에만 |
+| bore_type | 심볼 위치 |
+|---|---|
+| `복선` (기본) | 양쪽 선로 감싸는 하나의 심볼 |
+| `단선_상선` | 상선 위치에만 |
+| `단선_하선` | 하선 위치에만 |
 
 ### 심볼 형태
 
-| 구분 | 형태 | 설명 |
-|---|---|---|
-| **터널** | 닫힌 사각 윤곽선 □ | `M c1 L c4 L c3 L c2 Z` — 채움(fill) 없음 |
-| **교량·과선교** | 양 끝 브래킷 `] [` | 시작=`]`, 끝=`[`, 갈고리가 **바깥쪽**으로 꺾임 |
+| 구분 | 형태 |
+|---|---|
+| 터널 | 닫힌 사각 윤곽선 □ — `.attr('fill', 'none')` 필수 |
+| 교량·과선교 | 양 끝 브래킷 `] [` — cap이 **바깥쪽**으로 꺾임 |
 
-### ❌ 절대 하지 말 것
+### ❌ 절대 금지
 
-1. **`stroke-width`에 `vector-effect: non-scaling-stroke` 없이 고정값 지정 금지**  
-   → zoom에 비례해 두꺼워져 내부가 채워진 검은 박스가 됨
-   
-2. **교량 브래킷 cap 방향 반대 금지**  
-   - ❌ 잘못: cap이 **안쪽(내부)**으로 꺾임 → `[   ]` 모양
-   - ✅ 올바름: cap이 **바깥쪽(외부)**으로 꺾임 → `]   [` 모양
-   - 시작 브래킷 path: `M(c1 - fwd) L c1 L c2 L(c2 - fwd)` ← **-fwd(뒤쪽)**
-   - 끝 브래킷 path: `M(c4 + fwd) L c4 L c3 L(c3 + fwd)` ← **+fwd(앞쪽)**
+1. **터널/교량에 `vector-effect: non-scaling-stroke` 사용** → SVG 단위 렌더링과 충돌
+2. **교량 cap 방향 반대** → `[  ]` 모양이 됨 (올바름: `]  [`)
+3. **레이블 위치를 useEffect에서 고정 계산** → `_updateFacilityVisibility(k)`에서만 계산
+4. **닫힌 path에 fill='none' 누락** → 검은 박스로 채워짐
+5. **`buildTBSymbol` / `buildOffsetPath` / `blockSegmentOffsetSvg`에 `zoomK` 재추가** → SVG 단위 일관성 파괴
 
-3. **레이블 위치를 useEffect에서 고정 계산 금지**  
-   → useEffect 실행 시 zoom이 초기값(~0.5)이면 SVG 단위가 과도하게 커져 
-     실제 zoom 시 레이블이 시설물에서 매우 멀리 표시됨  
-   → 반드시 `_updateFacilityVisibility(k)`에서 현재 zoom으로 재계산
+---
 
-4. **`fill` 속성 기본값 주의**  
-   → 닫힌 SVG 경로(`Z`)는 `fill` 기본값이 `black` → 반드시 `.attr('fill', 'none')` 명시
+## 노선도 GIS — 역 좌표 모드
 
-### 올바른 구현 요약
+`system_settings.map_settings.station_points_mode` 제어 (기본: `center_only`).
 
-```typescript
-// 터널 심볼 (닫힌 사각 윤곽선)
-`M${c1} L${c4} L${c3} L${c2} Z`
+| 모드 | 노선도 + KP 보간 앵커 |
+|---|---|
+| `center_only` | station_center + facility_point/start/end (역 진입로 굴곡 방지) |
+| `all_points` | rail_computed_geometry 전체 (시점·종점 포함, 굴곡 발생 가능) |
 
-// 교량 심볼 (] [ — cap이 바깥쪽으로)
-// 시작 ]: cap이 -fwd(뒤쪽/시작방향)으로 꺾임
-`M${c1-fwd} L${c1} L${c2} L${c2-fwd}`
-// 끝 [: cap이 +fwd(앞쪽/끝방향)으로 꺾임  
-`M${c4+fwd} L${c4} L${c3} L${c3+fwd}`
+**facility_start/end(터널·교량 경계)는 center_only에서도 반드시 포함** — 누락 시 경부고속선 등에서 KP 보간 오류 발생.
 
-// stroke 설정 — non-scaling-stroke 필수
-.attr('fill', 'none')
-.attr('stroke', '#111111')
-.attr('stroke-width', 1.5)
-.attr('vector-effect', 'non-scaling-stroke')  // ← 없으면 zoom에 비례해 두꺼워짐
+**노선도 렌더링 ↔ 차단명령 KP 보간 반드시 동일 앵커 사용** — 불일치 시 차단구간이 선로에서 이탈함.
+
+```python
+# backend/app/api/v1/map.py
+_CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start', 'facility_end')"
 ```
+
+**KP 범위 경계 법선 오차**: `_rail_kp_range_coords`는 start 직전·end 직후 앵커 1개씩 포함.  
+프론트엔드 `buildOffsetPath`에서 맥락 앵커 제거 후 렌더링 (4점 이상일 때 slice(1,-1)).
 
 ---
 
 ## 도메인 핵심 개념
 
-### 조직 구조
+### 조직·권한
 
-- 지역본부 12개 + 사업단 2개 (고속시설·고속전기) = **14개 조직**
-- 동일 고속선 구간에 지역본부(행정)와 사업단(분야 유지보수)이 **중복 공존**한다.
+- 지역본부 12개 + 사업단 2개 = **14개 조직**
+- **role 판단은 string 비교만** — 불리언 플래그 사용 금지
+- `field` 코드: `all` / `시설` / `전기` / `건축`
 
-### 권한 체계
-
-| role | 설명 |
+| role | 권한 |
 |---|---|
-| `system_superuser` | 전체 CRUD, 크로스-org 등록, organization_id=NULL |
-| `org_admin` | 자기 조직 관할 구간 내 등록 (field로 분야 제한) |
-| `user` | 전국 차단명령 조회 전용 |
+| `system_superuser` | 전체 CRUD, 크로스-org |
+| `org_admin` | 자기 조직 관할 구간 내 등록 |
+| `user` | 전국 조회 전용 |
 
-- **role 판단은 string 비교만 사용한다.** 불리언 플래그(`isAdmin` 등) 사용 금지.
-- **분야(field) 코드:** `all` / `시설` / `전기` / `건축`
-
-### 위험등급 (danger_level)
-
-| 값 | 표시 | 색상 |
-|---|---|---|
-| `'A'` | A 위험 | `#ef4444` (적색) |
-| `'B'` | B 주의 | `#f59e0b` (황색) |
-| `'C'` | C 일반 | `#10b981` (녹색) |
-| `null` | 미지정 | `#6b7280` (회색) |
-
-### 선로(tracks) 명명 규칙
+### 선로(tracks) 명명
 
 | default_track_count | 선로 이름 |
 |---|---|
-| 1 (단선) | 상선 |
-| 2 (복선) | 상선, 하선 |
-| 4 (2복선) | 상1, 상2, 하1, 하2 |
-| 6 (3복선) | 상1, 상2, 상3, 하1, 하2, 하3 |
+| 1 단선 | 상선 |
+| 2 복선 | 상선, 하선 |
+| 4 2복선 | 상1, 상2, 하1, 하2 |
+| 6 3복선 | 상1, 상2, 상3, 하1, 하2, 하3 |
 
-- `block_orders.tracks`: JSON 배열 텍스트 `'["상선"]'`, `'["상선","하선"]'`
-- 복수 선택 가능 (예: 상선+하선 동시 차단, 상1+상2 등)
-- `direction` 컬럼은 tc05 마이그레이션에서 삭제 → `tracks`로 대체
-- `block_type`: 단선차단/복선차단 → **선로차단**으로 통합
-- 기지(기지 노선) 선로는 추후 구현 예정
+- `block_orders.tracks`: JSON 배열 텍스트 (`'["상선"]'`, `'["상1","하1"]'` 등)
+- `direction` 컬럼은 **tc05에서 삭제** — `tracks`로 대체
+- `block_type`: 단선차단/복선차단 → **선로차단** 통합
 
 ### 차단작업 분류
 
-**작업형태 (work_type):**
-
-| 값 | 의미 | 지도 표시 |
+| work_type | 의미 | 렌더링 |
 |---|---|---|
 | `인력` | 밀차 등 인력·공기구류 | 실선 얇음 |
-| `장비` | 보선장비·전철장비 등 철도차량 | 실선 두꺼움 |
+| `장비` | 보선장비·전철장비 등 | 실선 두꺼움 |
 | `기계` | 건설기계관리법상 건설기계 | 점선 두꺼움 |
 
-**시행주체 (implementer):**
-
-| 값 | 의미 |
+| implementer | 의미 |
 |---|---|
-| `철도공사` | 한국철도공사 (기본값) |
+| `철도공사` | 기본값 |
 | `철도공단` | 한국철도시설공단 |
-| `외부` | 외부 시공사·지자체 등 |
+| `외부` | → `is_external=true` 자동 동기화 |
 
-- `implementer='외부'`이면 `is_external=true` 자동 동기화 (레거시 호환)
-- 전차선단전 등록 시 `has_catenary` 자동 검증 → 비전철 구간 등록 거부
+### 위험등급
 
-### 선로 구성
-
-**`rail_routes` 기본값:**
-- `default_track_count INTEGER DEFAULT 2`: 단선(1)/복선(2)/복복선(4)/삼복선(6)
-- `default_has_catenary BOOLEAN DEFAULT 1`: 전차선 유무
-
-**`rail_track_sections`**: 구간별 예외 정의 (KP 범위 + track_count + has_catenary)  
-→ 조회 시 `rail_track_sections` 우선, 없으면 `rail_routes` 기본값
+| 값 | 색상 |
+|---|---|
+| `A` | `#ef4444` |
+| `B` | `#f59e0b` |
+| `C` | `#10b981` |
+| null | `#6b7280` |
 
 ### 철도 좌표계
 
-- 기준: **노선코드 + 거리정(KP/km)**, 단위 Float
-- 선로: `tracks` JSON 배열 (예: `["상선"]`, `["상1","하1"]`) — tc05 이후 `direction` 컬럼 대체
-- `km`과 `KP`는 같은 의미
+- 기준: 노선코드 + 거리정(KP/km, Float)
+- km = KP (동일 의미)
+- `UP` = 상선, `DOWN` = 하선, `BOTH` = 기지 전체 (block_orders에서는 tracks JSON으로 대체)
 
-### 차단명령 관리 원칙
+### 기지 노선
 
-- **건별·날짜별 이중 관리**: 각 `block_order` 1건 = 1일 1구간. `doc_no`로 같은 문서 묶음 조회 가능
-- **연속 작업**: 같은 구간 여러 날짜 = 날짜별 별도 건으로 등록 (각 날짜 = 독립 건)
-- **전차선단전 + 선로차단 동시**: 같은 문서 내 별도 block_order로 등록, `doc_no`로 연계
-
-### 사업건별 지도 강조
-
-- 차단명령 카드 클릭 시 같은 `doc_no` = 같은 사업 묶음으로 인식
-- 해당 사업 건들 → 밝게 표시, 나머지 → opacity × 0.25 흐리게
-- `RailwayMap` prop: `highlightedBlockIds?: Set<number>`
-- 상세 패널: "📋 사업 묶음 문서 XXX — N건" 표시
-
-### 연속 작업 자동 감지
-
-- 선택된 건의 ±45일 범위 로드 (확장 쿼리, 선택 시만 실행)
-- 같은 노선+tracks+구간+분야가 연속 날짜에 등록된 경우 "시리즈" 감지
-- 상세 패널: "📅 연속 작업 YYYY-MM-DD ~ YYYY-MM-DD  [N일]" 표시
-- `BlockOrdersPage`에 `doc_no` 텍스트 필터 추가로 사업 단위 일괄 조회 가능
-
-### 기지 노선 (line_type = '기지')
-
-차량기지·보수기지는 `rail_routes`에 `line_type='기지'`로 별도 등록.  
-기지 작업은 KP 관할구간 검증 생략, org_admin 권한이면 등록 가능.
-
-### 차단현황도 포커스 (fly-to)
-
-- 사이드바 카드 클릭 → 해당 차단구간 위치로 지도 이동 (700ms 애니메이션)
-- 캘린더·차단명령 페이지에서 항목 클릭 → `/block-map?date=...&block_id=N` 으로 이동
-- `BlockMapPage`가 `block_id` URL 파라미터를 읽어 자동 선택 + fly-to
-
-### 노선도 GIS
-
-- `rail_computed_geometry`: 기본 노선 GIS SOT (77노선, all_points 모드)
-- `rail_baseline_points`: KP + GPS anchor 원천 (center_only 모드 직접 사용)
-- **대한민국 지도** (`korea_map_level*.geojson`) **절대 삭제·변경 금지**
-
-#### 역 좌표 모드 (station_points_mode)
-
-`system_settings.map_settings.station_points_mode` 로 제어. **기본값: `center_only`**
-
-| 모드 | 노선도 앵커 | KP 보간 앵커 | 특징 |
-|---|---|---|---|
-| `center_only` | station_center + facility_point/start/end | 동일 | 역 진입로 굴곡 없음, 터널·교량 포함 |
-| `all_points` | rail_computed_geometry 전체 | 전체 앵커 | 기존 방식, 역 구내 굴곡 발생 가능 |
-
-**앵커 포함 기준 (center_only):**
-- ✅ `station_center`: 역 중심 GPS
-- ✅ `facility_point`: 변전소 등 점 시설물
-- ✅ `facility_start/end`: 터널·교량 경계점 (본선 위에 있으므로 포함)
-- ❌ `station_yard_start/end`: 역 진입로 (곡선 굴곡 유발, 제외)
-
-**중요**: 노선도 렌더링과 차단명령 KP 보간은 **반드시 동일한 앵커 셋**을 사용. 불일치 시 차단구간이 노선에서 이탈함.
+`rail_routes.line_type='기지'` — KP 관할구간 검증 생략, org_admin이면 등록 가능.
 
 ---
 
-## Alembic 마이그레이션 이력 (주요)
+## 시스템 설정 (`system_settings`)
+
+| category | key | 기본값 | 타입 |
+|---|---|---|---|
+| route_colors | highway / electrified / non_electrified / catenary_cut | 색상코드 | #RRGGBB |
+| block_colors | track_block / danger_zone | 색상코드 | #RRGGBB |
+| danger_colors | level_a / level_b / level_c / none | 색상코드 | #RRGGBB |
+| facility_colors | station_master 등 12개 | 색상코드 | #RRGGBB |
+| map_settings | station_points_mode | center_only | center_only \| all_points |
+| map_settings | stroke_cap_zoom | 5 | 숫자 2~20 |
+
+API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset-all`
+
+---
+
+## Alembic 마이그레이션
 
 | revision | 내용 |
 |---|---|
-| `tc01_rail_track_sections` | `rail_routes.default_track_count/has_catenary` + `rail_track_sections` 신규 |
-| `tc02_work_type_implementer` | `block_orders.work_type` + `implementer` 추가, `is_external` 마이그레이션 |
-| `tc03_bore_type` | `rail_facilities.bore_type` 추가 (터널·교량 선로 적용 방식) |
-| `tc04_system_settings` | `system_settings` 테이블 + 22개 색상 초기값 시드 |
-| `tc05_tracks_field` | `block_orders.direction` 삭제 → `tracks` TEXT(JSON) 교체. 단선차단/복선차단 → 선로차단 |
+| `tc01_rail_track_sections` | rail_routes.default_track_count/has_catenary + rail_track_sections |
+| `tc02_work_type_implementer` | block_orders.work_type + implementer |
+| `tc03_bore_type` | rail_facilities.bore_type (터널·교량 선로 방식) |
+| `tc04_system_settings` | system_settings 테이블 + 색상 시드 |
+| `tc05_tracks_field` | direction → tracks TEXT(JSON), 단선차단/복선차단 → 선로차단 |
 
 ---
 
@@ -455,11 +361,9 @@ zoom 증가에 따라 로그적으로 두꺼워짐:
 | TypeScript | camelCase |
 | API 경로 | `/api/v1/...` |
 | DB 테이블명 | 복수형 snake_case |
-| 거리정 | Float, 소수점 1자리, km 단위 |
-| 비밀번호 | bcrypt 해시만 저장. `bcrypt==4.0.1` 고정 (5.x 비호환) |
+| 거리정 | Float, km 단위 |
+| 비밀번호 | bcrypt 해시만. `bcrypt==4.0.1` 고정 (5.x 비호환) |
 | 파일 경로 | 절대경로 금지 — `pathlib.Path(__file__).parent` 기준 |
-
----
 
 ## 절대 커밋 금지
 
@@ -471,8 +375,8 @@ zoom 증가에 따라 로그적으로 두꺼워짐:
 
 | 문서 | 내용 |
 |---|---|
-| [plan.md](plan.md) | 개발 로드맵, Phase 현황 |
-| [docs/DATABASE.md](docs/DATABASE.md) | DB 스키마 상세, ORM 모델, Alembic |
-| [docs/MAPS.md](docs/MAPS.md) | GIS 파이프라인, LOD, KP 보간, 지도 배경 |
+| [plan.md](plan.md) | 현재 상태, 미구현 항목 |
+| [docs/DATABASE.md](docs/DATABASE.md) | DB 스키마 상세 |
+| [docs/MAPS.md](docs/MAPS.md) | GIS 파이프라인, KP 보간 |
 | [docs/block_order_pdf_parsing.md](docs/block_order_pdf_parsing.md) | PDF 파싱 명세 |
-| [frontend/UI_UX.md](frontend/UI_UX.md) | UI 설계 원칙, 컬러 팔레트, UX 규칙 |
+| [frontend/UI_UX.md](frontend/UI_UX.md) | UI/UX 원칙 |

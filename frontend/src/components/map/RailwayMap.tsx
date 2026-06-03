@@ -56,6 +56,8 @@ interface Props {
   highlightedBlockIds?: Set<number> | null;
   /** 차단구간 클릭 시 호출 — id 전달 */
   onBlockSegmentClick?: (id: number) => void;
+  /** 선 두께 포화 배율 — 이 k 이상에서 stroke 화면 픽셀 고정 (기본 5) */
+  strokeCapZoom?: number;
 }
 
 // ── 색상 정의 ──────────────────────────────────────────────────────────────
@@ -73,40 +75,57 @@ function computedRouteStroke(
   return hasCatenary ? colors.electrified : colors.nonElectrified;
 }
 
-// ── 선로 수 기반 다중 선로 렌더링 유틸 ─────────────────────────────────────
+// ── SVG 월드 단위 선로 렌더링 유틸 ───────────────────────────────────────────
+//
+// D3 geoMercator scale=12180 (Korea 기준):
+//   1 SVG unit ≈ 418m
+//   zoom transform 이 모든 요소를 균일하게 스케일링하므로
+//   SVG 단위로 표현하면 non-scaling-stroke / 수동 /k 변환 없이 자동 일관성 달성
+//
+// 도출 근거 (실측):
+//   TRACK_HALF_GAP_SVG=1.0 → k=1.5에서 3px, k=3에서 6px, k=5에서 10px
+//   → 차단정보 시인성 확보 줌(k≥3)에서 선로 분리가 명확하고,
+//     전국 조망(k≤1)에서는 자연스럽게 보이지 않아 지도가 산만하지 않음
+
+/** SVG 월드 단위 상수 — 모든 railway 레이어가 이 값 기준으로 스케일 */
+const TRACK_HALF_GAP_SVG  = 1.0;   // 선로 반간격 (복선: 상선=−1.0, 하선=+1.0)
+const ROUTE_STROKE_SVG    = 0.4;   // 노선 중심선 두께
+const BLOCK_STROKE_SVG    = ROUTE_STROKE_SVG * 2;  // 선로차단 선 두께 = 노선의 2배 (0.8)
+const CATENARY_STROKE_SVG = 1.0;   // 전차선단전 선 두께
+const LANE_GAP_SVG        = 0.3;   // 병행 레인 간격
+const DANGER_ZONE_SVG     = 8.0;   // 위험지구 시각 폭
+const PROTECT_ZONE_SVG    = 16.0;  // 보호지구 시각 폭
+const ORG_BOUNDARY_SVG    = 3.0;   // 관할구간 선 두께
+
 /**
- * track_count와 현재 줌 배율에 따른 선로 오프셋 목록 (물리 픽셀).
- * 줌이 커질수록 trackHalfGapPx 도 커지므로 상·하선 간격이 늘어난다.
+ * Soft cap: k≤capZoom까지는 SVG 단위로 자연 스케일,
+ * k>capZoom 이후에는 화면 픽셀이 svgVal×capZoom 으로 고정.
+ * capZoom은 시스템 설정(map_settings.stroke_cap_zoom)에서 읽어온 값.
  *
- * 예시 (복선, zoom 1.5 → half=4, zoom 30 → half=10):
- *   zoom 1.5: [-4, +4]   총 8px
- *   zoom 30:  [-10, +10] 총 20px
+ * 예) ROUTE_STROKE_SVG=0.4, capZoom=5:
+ *   k=3  → 0.4 SVG → 1.2px screen (자연 성장)
+ *   k=5  → 0.4 SVG → 2.0px screen (cap 도달)
+ *   k=20 → 0.1 SVG → 2.0px screen (고정)
  */
+function capStrokeSvg(svgVal: number, k: number, capZoom: number): number {
+  return svgVal * Math.min(1, capZoom / k);
+}
+
 /**
- * 선로 오프셋 목록.
+ * 선로 오프셋 목록 (SVG 단위, zoom 무관).
+ * D3 zoom transform이 자동 스케일링 → LOD 코드 불필요.
  *
- * 복선(2): 항상 [-half, +half] 고정.
- * 2복선(4) / 3복선(6):
- *   zoom ≤ 2.5   → 압축 모드: ±half 내 균등 배분 (복선과 같은 스팬)
- *   zoom 2.5→4.5 → 선형 보간으로 점진적 확장
- *   zoom ≥ 4.5   → 확장 모드: 선로 간 간격 = 2×half (복선 상하선 간격과 동일)
+ * 단선(1):  [0]
+ * 복선(2):  [−1.0, +1.0]
+ * 2복선(4): [−3.0, −1.0, +1.0, +3.0]
+ * 3복선(6): [−5.0, −3.0, −1.0, +1.0, +3.0, +5.0]
  */
-function trackOffsetsPx(trackCount: number, zoomK: number): number[] {
-  const half = trackHalfGapPx(zoomK);
+function trackOffsetsSvg(trackCount: number): number[] {
+  const h = TRACK_HALF_GAP_SVG;
   const n = [1, 2, 4, 6].includes(trackCount) ? trackCount : 2;
   if (n === 1) return [0];
-  if (n === 2) return [-half, +half];
-
-  // 2복선/3복선: 줌 배율에 따라 선로 간격 확장
-  const ZOOM_COMPRESS = 5.8;  // 이하: 압축 (복선과 같은 스팬)
-  const ZOOM_EXPAND   = 20;   // 이상: 완전 확장 (복선 간격 단위)
-  const t = Math.max(0, Math.min(1, (zoomK - ZOOM_COMPRESS) / (ZOOM_EXPAND - ZOOM_COMPRESS)));
-
-  const spacingCompressed = (half * 2) / (n - 1);  // ±half 내 균등
-  const spacingExpanded   = half * 2;               // 복선 간격 단위
-  const spacing = spacingCompressed + t * (spacingExpanded - spacingCompressed);
-
-  const start = -(spacing * (n - 1)) / 2;
+  const spacing = h * 2;
+  const start   = -(n - 1) * h;
   return Array.from({ length: n }, (_, i) => start + i * spacing);
 }
 
@@ -209,7 +228,6 @@ function buildTBSymbol(
   boreType: string,       // 복선 | 단선_상선 | 단선_하선
   stationType: string,    // 터널 | 교량 | 과선교
   projection: d3.GeoProjection,
-  zoomK: number,
 ): string {
   const pts = coords2D
     .map(([lon, lat]) => projection([lon, lat]))
@@ -219,32 +237,24 @@ function buildTBSymbol(
   const start = pts[0];
   const end   = pts[pts.length - 1];
 
-  // 트랙 방향 벡터 (정규화)
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
   const len = Math.sqrt(dx*dx + dy*dy);
   if (len < 1e-6) return '';
   const ndx = dx / len;
   const ndy = dy / len;
-
-  // 수직(법선) 벡터
   const nx = -ndy;
   const ny =  ndx;
 
-  const halfGap = trackHalfGapPx(zoomK);
+  // bore_type에 따른 심볼 중심 오프셋 (SVG 단위)
+  let co = 0;
+  if (boreType === '단선_상선') co = -TRACK_HALF_GAP_SVG;
+  if (boreType === '단선_하선') co = +TRACK_HALF_GAP_SVG;
 
-  // bore_type에 따른 심볼 중심 오프셋 (물리 픽셀)
-  let centerOffPx = 0;
-  if (boreType === '단선_상선') centerOffPx = -halfGap;  // UP 선로 위치
-  if (boreType === '단선_하선') centerOffPx = +halfGap;  // DOWN 선로 위치
-
-  // 심볼 폭 (절반) (물리 픽셀)
-  const halfWidthPx = boreType === '복선'
-    ? (halfGap + ROUTE_STROKE_PX / 2 + 2)   // 양쪽 선로 포함 + 여유
-    : (ROUTE_STROKE_PX / 2 + 3);            // 단선: 선로 하나 + 여유
-
-  const co = centerOffPx / zoomK;
-  const hw = halfWidthPx  / zoomK;
+  // 심볼 폭 (절반, SVG 단위) — 복선: 양쪽 선로 포함, 단선: 선로 하나 + 여유
+  const hw = boreType === '복선'
+    ? (TRACK_HALF_GAP_SVG + ROUTE_STROKE_SVG / 2 + 0.5)
+    : (ROUTE_STROKE_SVG / 2 + 0.8);
 
   // 심볼 중심 시작·종료점
   const cs: [number, number] = [start[0] + co * nx, start[1] + co * ny];
@@ -288,19 +298,18 @@ function buildTBSymbol(
   }
 }
 
+/** 선로 오프셋(SVG 단위)이 적용된 track path 생성. */
 function buildTrackPath(
   coords: [number, number, number][],
-  trackOffsetPx: number,
+  trackOffsetSvg: number,
   projection: d3.GeoProjection,
-  zoomK: number,
 ): string {
   const pts = coords
     .map(([lon, lat]) => projection([lon, lat]))
     .filter((p): p is [number, number] => p !== null);
   if (pts.length < 2) return '';
-  if (trackOffsetPx === 0) return d3.line()(pts) ?? '';
+  if (trackOffsetSvg === 0) return d3.line()(pts) ?? '';
 
-  const svgOff = trackOffsetPx / zoomK;
   const offsetPts: [number, number][] = pts.map((p, i) => {
     let dx: number, dy: number;
     if (i === 0)                   { dx = pts[1][0] - pts[0][0]; dy = pts[1][1] - pts[0][1]; }
@@ -310,7 +319,7 @@ function buildTrackPath(
     if (len < 1e-6) return p;
     const nx = -dy / len;
     const ny =  dx / len;
-    return [p[0] + svgOff * nx, p[1] + svgOff * ny] as [number, number];
+    return [p[0] + trackOffsetSvg * nx, p[1] + trackOffsetSvg * ny] as [number, number];
   });
   return d3.line()(offsetPts) ?? '';
 }
@@ -425,10 +434,20 @@ function segmentMidpoint(coords: [number,number][], projection: d3.GeoProjection
   return pts[pts.length-1];
 }
 
-function buildOffsetPath(coords:[number,number][], track:string, routeTrackCount:number, projection:d3.GeoProjection, zoomK:number, laneIndex=0): string {
+/**
+ * 선로 오프셋이 적용된 SVG path 문자열 생성 (zoom 무관 SVG 단위).
+ *
+ * coords: GeoJSON 좌표 배열 [lon, lat].
+ *   백엔드가 법선 방향 계산을 위해 블록 KP 범위 밖 맥락 앵커(앞·뒤 1개씩)를
+ *   포함해서 반환하므로, 렌더링은 coords[1]~coords[n-2] 구간만 사용한다.
+ *   맥락 앵커가 없을 때(2점 이하)는 전체를 사용한다.
+ */
+function buildOffsetPath(coords:[number,number][], track:string, routeTrackCount:number, projection:d3.GeoProjection, laneIndex=0, blockType=''): string {
   const pts = coords.map(([lon,lat]) => projection([lon,lat])).filter((p): p is [number,number] => p !== null);
   if (pts.length < 2) return '';
-  const svgOff = blockSegmentOffsetSvg(track, routeTrackCount, laneIndex, zoomK);
+  const svgOff = blockSegmentOffsetSvg(track, routeTrackCount, laneIndex, blockType);
+
+  // 법선 방향은 전체 pts(맥락 포함)로 계산, 렌더링은 실제 블록 범위만
   const offsetPts: [number,number][] = pts.map((p,i) => {
     let dx: number, dy: number;
     if (i===0){dx=pts[1][0]-pts[0][0];dy=pts[1][1]-pts[0][1];}
@@ -439,66 +458,17 @@ function buildOffsetPath(coords:[number,number][], track:string, routeTrackCount
     const nx=-dy/len, ny=dx/len;
     return [p[0]+svgOff*nx, p[1]+svgOff*ny] as [number,number];
   });
-  return d3.line()(offsetPts) ?? '';
+
+  // 맥락 앵커 제거: 앞뒤 1점씩 제외 (원본 coords가 3점 이상일 때만)
+  const renderPts = pts.length >= 4
+    ? offsetPts.slice(1, offsetPts.length - 1)
+    : offsetPts;
+
+  return d3.line()(renderPts) ?? '';
 }
 
 // 전차선단전 여부 판별
 const CATENARY_BLOCK_TYPES = new Set(['전차선단전']);
-
-// ── 줌 반응형 레인 오프셋 ─────────────────────────────────────────────────
-// 노선 선폭을 기준으로 레인 위치를 결정 → 어느 줌 배율에서도 노선과 레인의
-// 상대 관계가 일정하게 유지된다.
-
-const ROUTE_STROKE_PX = 1.5;  // 노선 선 물리 픽셀 폭
-const LANE_GAP_PX     = 1.5;  // 레인 간 간격 (물리 픽셀)
-
-/**
- * 줌 배율에 따른 상·하선 전체 간격 (물리 픽셀) 단계표.
- * [줌배율, 전체간격(px)] — 구간 사이는 선형 보간.
- *
- * zoom  1.5 →  4px 전체 (상선 -2, 하선 +2)
- * zoom  3   →  6px 전체 (상선 -3, 하선 +3)
- * zoom  6   →  8px 전체 (상선 -4, 하선 +4)
- * zoom 10   → 10px 전체 (상선 -5, 하선 +5)
- * zoom 20   → 12px 전체 (상선 -6, 하선 +6)
- * zoom 30   → 14px 전체 (상선 -7, 하선 +7)
- */
-const TRACK_GAP_STEPS: [number, number][] = [
-  [1.5,  4],
-  [3,    6],
-  [6,    8],
-  [10,  10],
-  [20,  12],
-  [30,  14],
-];
-
-/** 현재 줌에서의 전체 간격 → 반간격(half) 반환. */
-function trackHalfGapPx(zoomK: number): number {
-  const steps = TRACK_GAP_STEPS;
-  let totalGap: number;
-  if (zoomK <= steps[0][0]) {
-    totalGap = steps[0][1];
-  } else if (zoomK >= steps[steps.length - 1][0]) {
-    totalGap = steps[steps.length - 1][1];
-  } else {
-    totalGap = steps[steps.length - 1][1];
-    for (let i = 1; i < steps.length; i++) {
-      const [z0, g0] = steps[i - 1];
-      const [z1, g1] = steps[i];
-      if (zoomK <= z1) {
-        const t = (zoomK - z0) / (z1 - z0);
-        totalGap = g0 + t * (g1 - g0);
-        break;
-      }
-    }
-  }
-  return totalGap / 2;  // 전체 간격의 절반 = 중심에서 각 선로까지 거리
-}
-
-/** 줌에 따른 레인 폭 (물리 픽셀). 줌 증가에 따라 로그적으로 두께 증가. */
-function laneWidthPx(zoomK: number): number {
-  return Math.min(10, Math.max(3, 3 + Math.log2(Math.max(1, zoomK))));
-}
 
 /**
  * 선로 이름 → 해당 선로의 UP 방향 여부.
@@ -533,21 +503,45 @@ function trackNameToIndex(trackName: string, trackCount: number): number {
 }
 
 /**
- * 선로차단 레인 중심의 SVG 단위 오프셋.
+ * 선로차단 레인 중심의 SVG 단위 오프셋 (zoom 무관 — D3 transform이 스케일링).
  *
  * track: 선로 이름 (상선/하선/상1/상2/상3/하1/하2/하3)
  * routeTrackCount: 해당 노선의 선로 수 (1/2/4/6)
  * laneIndex: 동일 선로 위 병행 차단 레인 번호 (0=선로 위, 1+=바깥쪽 누적)
+ * blockType: block_type — 작업구간설정/보호지구작업은 최외방에서 추가 이격
  */
-function blockSegmentOffsetSvg(track: string, routeTrackCount: number, laneIndex: number, zoomK: number): number {
-  const offsets = trackOffsetsPx(routeTrackCount, zoomK);
-  const idx = trackNameToIndex(track, routeTrackCount);
-  const physicalPx = offsets[idx] ?? (isUpTrack(track) ? -trackHalfGapPx(zoomK) : trackHalfGapPx(zoomK));
-  const w = laneWidthPx(zoomK);
-  const parallelPx = laneIndex * (w + LANE_GAP_PX);
+function blockSegmentOffsetSvg(
+  track: string,
+  routeTrackCount: number,
+  laneIndex: number,
+  blockType = '',
+): number {
+  const offsets = trackOffsetsSvg(routeTrackCount);
   const isUp = isUpTrack(track);
-  const totalPx = physicalPx + (isUp ? -parallelPx : parallelPx);
-  return totalPx / zoomK;
+
+  // 최외방 선로 SVG 오프셋
+  const outerOffsets = trackOffsetsSvg(routeTrackCount);
+  const outerPhysical = isUp
+    ? outerOffsets[0]                        // 상선 계열: 가장 음수 (위쪽)
+    : outerOffsets[outerOffsets.length - 1]; // 하선 계열: 가장 양수 (아래쪽)
+
+  const idx = trackNameToIndex(track, routeTrackCount);
+  const physicalSvg = offsets[idx] ?? (isUp ? -TRACK_HALF_GAP_SVG : TRACK_HALF_GAP_SVG);
+  const parallelSvg = laneIndex * (BLOCK_STROKE_SVG + LANE_GAP_SVG);
+
+  // 이격 표시: 최외방 선로에서 추가 오프셋
+  if (blockType === '작업구간설정') {
+    // 차단 없는 인력/기계: 최외방에서 0.5×gap 외방
+    const extraOff = TRACK_HALF_GAP_SVG * 0.5;
+    return outerPhysical + (isUp ? -extraOff : extraOff);
+  }
+  if (blockType === '보호지구작업') {
+    // 보호지구: 최외방에서 1.0×gap 외방 (사각형 중심)
+    const extraOff = TRACK_HALF_GAP_SVG * 1.0;
+    return outerPhysical + (isUp ? -extraOff : extraOff);
+  }
+
+  return physicalSvg + (isUp ? -parallelSvg : parallelSvg);
 }
 
 /** 차단 종류 → 선 스타일 (대시 패턴·투명도·상대 두께) */
@@ -564,24 +558,28 @@ function blockLineStyle(blockType: string, workType?: string | null): {
   opacity: number;
   widthScale: number;
 } {
-  // work_type 우선
-  if (workType === '인력') return { dashArray: null,    opacity: 0.80, widthScale: 0.7 };
-  if (workType === '장비') return { dashArray: null,    opacity: 0.92, widthScale: 1.0 };
-  if (workType === '기계') return { dashArray: '10 5',  opacity: 0.92, widthScale: 1.2 };
-
-  // block_type fallback
-  switch (blockType) {
-    case '단선차단':
-    case '복선차단':
-      return { dashArray: null,    opacity: 0.92, widthScale: 1.0 };
-    case '임시완속':
-    case '속도제한':
-      return { dashArray: '10 4',  opacity: 0.70, widthScale: 0.8 };
-    case '작업구간설정':
-      return { dashArray: '4 4',   opacity: 0.65, widthScale: 0.8 };
-    default:
-      return { dashArray: null,    opacity: 0.75, widthScale: 0.8 };
+  // 선로차단 계열: 작업형태 구분 없이 통일 두께 (BLOCK_STROKE_SVG = 노선의 2배)
+  // work_type은 향후 장비 투입 표시 구분에 활용 예정
+  if (blockType === '선로차단') {
+    return { dashArray: null, opacity: 0.92, widthScale: 1.0 };
   }
+
+  // 차단 없는 인력/기계 이격 표시 (작업구간설정) — 노선 외방 0.5×gap에 실선
+  if (blockType === '작업구간설정') {
+    return { dashArray: null, opacity: 0.80, widthScale: 1.0 };
+  }
+
+  // 속도 제한 계열
+  if (blockType === '임시완속' || blockType === '속도제한') {
+    return { dashArray: '10 4', opacity: 0.70, widthScale: 0.8 };
+  }
+
+  // 보호지구작업 — 사각형+해칭으로 별도 레이어에서 처리, 여기선 fallback
+  if (blockType === '보호지구작업') {
+    return { dashArray: null, opacity: 0.85, widthScale: 1.0 };
+  }
+
+  return { dashArray: null, opacity: 0.75, widthScale: 0.8 };
 }
 
 /** 분야 → 레인 우선순위 (낮을수록 노선에 가까운 레인) */
@@ -592,6 +590,18 @@ const FIELD_LANE_PRIORITY: Record<string, number> = { '시설': 0, '전기': 1, 
  * (rail_route_id OR route_name, direction) 그룹 내에서
  * 분야 우선순위 → block_order.id 순으로 정렬하여 순번을 레인 인덱스로 사용.
  */
+/**
+ * KP 범위 겹침 여부 판단.
+ * 두 블록이 실제로 지도 위에서 겹치는지 확인 → 겹칠 때만 다른 레인으로 분리.
+ */
+function kpOverlaps(a: BlockSegmentFeature, b: BlockSegmentFeature): boolean {
+  const aS = a.properties.start_kp ?? a.properties.start_km ?? -Infinity;
+  const aE = a.properties.end_kp   ?? a.properties.end_km   ?? Infinity;
+  const bS = b.properties.start_kp ?? b.properties.start_km ?? -Infinity;
+  const bE = b.properties.end_kp   ?? b.properties.end_km   ?? Infinity;
+  return aS < bE && bS < aE;
+}
+
 function assignLanes(features: BlockSegmentFeature[]): LanedSegment[] {
   const groups = new Map<string, BlockSegmentFeature[]>();
   for (const f of features) {
@@ -606,7 +616,25 @@ function assignLanes(features: BlockSegmentFeature[]): LanedSegment[] {
       const pb = FIELD_LANE_PRIORITY[b.properties.field] ?? 9;
       return pa !== pb ? pa - pb : a.properties.id - b.properties.id;
     });
-    group.forEach((f, idx) => result.push({ ...f, _lane: idx }));
+    // KP가 겹치는 블록끼리만 레인을 쌓는다.
+    // 겹치지 않는 블록은 항상 lane=0 (선로 위에 직접 표시).
+    group.forEach((f) => {
+      // 이미 배정된 블록 중 f와 KP가 겹치는 것들의 레인 번호 집합
+      const usedLanes = new Set<number>();
+      for (const existing of result) {
+        const sameGroup =
+          (existing.properties.rail_route_id ?? existing.properties.route_name) ===
+          (f.properties.rail_route_id ?? f.properties.route_name) &&
+          existing.properties.track === f.properties.track;
+        if (sameGroup && kpOverlaps(existing, f)) {
+          usedLanes.add(existing._lane);
+        }
+      }
+      // 가장 작은 미사용 레인 번호 배정
+      let lane = 0;
+      while (usedLanes.has(lane)) lane++;
+      result.push({ ...f, _lane: lane });
+    });
   }
   return result;
 }
@@ -705,18 +733,21 @@ export default function RailwayMap({
   selectedBlockId = null,
   highlightedBlockIds = null,
   onBlockSegmentClick,
+  strokeCapZoom: strokeCapZoomProp,
 }: Props) {
   // ── 시스템 설정 색상 (새로고침 후 적용) ─────────────────────────────────────
-  const { routeColors, blockColors, dangerColors, facilityColors, stationPointsMode } = useSettingsStore();
+  const { routeColors, blockColors, dangerColors, facilityColors, stationPointsMode, strokeCapZoom: strokeCapZoomStore } = useSettingsStore();
+  // prop 우선, 없으면 store 값 사용
+  const strokeCapZoom = strokeCapZoomProp ?? strokeCapZoomStore;
 
   // D3 zoom 핸들러·useEffect에서 최신 색상 참조를 위한 ref
   const routeColorsRef   = useRef(routeColors);
   const blockColorsRef   = useRef(blockColors);
   const dangerColorsRef  = useRef(dangerColors);
   const facilityColorsRef = useRef(facilityColors);
-  routeColorsRef.current  = routeColors;
-  blockColorsRef.current  = blockColors;
-  dangerColorsRef.current = dangerColors;
+  routeColorsRef.current    = routeColors;
+  blockColorsRef.current    = blockColors;
+  dangerColorsRef.current   = dangerColors;
   facilityColorsRef.current = facilityColors;
 
   // 컴포넌트 내 색상 파생값 (D3 useEffect에서 사용)
@@ -764,7 +795,11 @@ export default function RailwayMap({
   // 노선코드 → 선로수 맵 (터널·교량 각 선로 렌더링에 사용)
   const routeTrackCountMapRef = useRef<Map<string, number>>(new Map());
   // 단선(zoom<1.5) ↔ 복선(zoom≥1.5) 전환 추적 — 경계 통과 시 풀 리빌드 필요
-  const prevShowMultiTrackRef = useRef(false);
+  const prevShowMultiTrackRef  = useRef(false);
+  const selectedBlockIdRef     = useRef<number | null>(null);
+  const strokeCapZoomRef       = useRef<number>(5);
+  selectedBlockIdRef.current   = selectedBlockId ?? null;  // 매 렌더마다 동기화
+  strokeCapZoomRef.current     = strokeCapZoom;
   // fly-to 중복 방지: 동일 ID에 대해 blockSegments 갱신 시 재이동하지 않도록 추적
   const lastFlownToRef        = useRef<number | null>(null);
   const [facilityPopup, setFacilityPopup] = useState<FacilityPopup | null>(null);
@@ -877,10 +912,11 @@ export default function RailwayMap({
     g.append('g').attr('class', 'routes-computed');
     g.append('g').attr('class', 'tunnel-bridge');    // 터널·교량: 각 선로 위에 직접 표시 (routes 위)
     g.append('g').attr('class', 'org-boundaries');
-    g.append('g').attr('class', 'danger-zones');      // 위험/보호구간
-    g.append('g').attr('class', 'catenary-cuts');      // 전차선단전 (녹색, 노선 위)
-    g.append('g').attr('class', 'block-bands');        // LOD2: 다중 레인 집합 밴드 (배경)
-    g.append('g').attr('class', 'block-segments');     // 선로차단 (노란, 가장 두꺼움)
+    g.append('g').attr('class', 'danger-zones');          // 위험/보호구간
+    g.append('g').attr('class', 'catenary-cuts');          // 전차선단전 (녹색, 노선 위)
+    g.append('g').attr('class', 'block-bands');            // LOD2: 다중 레인 집합 밴드 (배경)
+    g.append('g').attr('class', 'protection-zone-works'); // 보호지구작업 사각형+해칭
+    g.append('g').attr('class', 'block-segments');         // 선로차단 (노란, 가장 두꺼움)
     g.append('g').attr('class', 'block-route-badges'); // 줌<1.5: 노선별 집계 배지
     g.append('g').attr('class', 'block-markers');      // 줌≥1.5: 구간 중심점 마커
     g.append('g').attr('class', 'facility-segments');
@@ -959,58 +995,27 @@ export default function RailwayMap({
               }
             }
             routeLayer.selectAll('*').remove();
+            // SVG 단위: path는 한 번만 빌드, D3 zoom transform이 자동 스케일링
             routeLayer.selectAll<SVGPathElement, TrackPath>('path.route-computed')
               .data(paths).join('path')
               .attr('class', (d) => `route-computed route-computed-${d.routeCode}`)
               .attr('d', (d) => {
-                const off = trackOffsetsPx(d.trackCount, k)[d.trackIndex] ?? 0;
-                return buildTrackPath(d.coords, off, proj, k);
+                const off = trackOffsetsSvg(d.trackCount)[d.trackIndex] ?? 0;
+                return buildTrackPath(d.coords, off, proj);
               })
               .attr('fill', 'none')
               .attr('stroke', (d) => computedRouteStroke(d.lineType, d.hasCatenary, routeColorsRef.current))
-              .attr('stroke-width', ROUTE_STROKE_PX)
-              .attr('vector-effect', 'non-scaling-stroke')
+              .attr('stroke-width', ROUTE_STROKE_SVG)
+              // non-scaling-stroke 제거 — SVG 단위가 zoom과 함께 자연스럽게 스케일
               .attr('display', (d) => d.hidden ? 'none' : null);
-          } else {
-            // 동일 모드 유지 → trackHalfGapPx(k) 재계산으로 간격 업데이트
-            type TP = { trackIndex: number; trackCount: number; coords: [number,number,number][] };
-            g.selectAll<SVGPathElement, TP>('path.route-computed')
-              .attr('d', (d) => {
-                const off = trackOffsetsPx(d.trackCount, k)[d.trackIndex] ?? 0;
-                return buildTrackPath(d.coords, off, proj, k);
-              });
           }
+          // 동일 모드 유지 시: SVG 단위 오프셋은 zoom 무관 → path 재계산 불필요
         }
 
-        // 줌 변경 시 block-segment 오프셋·레인폭 즉시 재계산
-        if (proj && lanedSegmentsRef.current.length) {
-          // 개별 레인 선분 — 각 레인의 laneIndex 반영
-          g.selectAll<SVGPathElement, LanedSegment>('path.block-segment, path.block-segment-hit')
-            .attr('d', (d) =>
-              buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k, d._lane)
-            );
-          // 개별 레인 선폭도 줌에 반응
-          g.selectAll<SVGPathElement, LanedSegment>('path.block-segment')
-            .attr('stroke-width', (d) => {
-              const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
-              return laneWidthPx(k) * style.widthScale;
-            });
-          // 위험/보호구간: 레인 0 기준 (노선 바로 옆)
-          g.selectAll<SVGPathElement, BlockSegmentFeature>('path.protect-zone, path.danger-zone')
-            .attr('d', (d) =>
-              buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k, 0)
-            );
-          // 집합 밴드: maxLane 기반 중심 오프셋 + 전체 폭
-          g.selectAll<SVGPathElement, BandData>('path.block-band')
-            .attr('d', (d) =>
-              buildOffsetPath(d.geometry.coordinates as [number, number][], d.track, d.routeTrackCount, proj, k, d.maxLane / 2)
-            )
-            .attr('stroke-width', (d) => {
-              const w = laneWidthPx(k);
-              return (d.maxLane + 1) * (w + LANE_GAP_PX) / k;
-            });
-        }
-        // 마커·집계 배지 스케일 갱신 (1/k로 화면 크기 일정 유지)
+        // SVG 단위 전환 후: block-segment path/stroke는 zoom 변경 시 재계산 불필요
+        // D3 zoom transform이 모든 SVG 요소를 균일하게 스케일링함
+
+        // 마커·배지: 텍스트 레이블이므로 화면 고정 크기 유지 (scale(1/k))
         g.selectAll<SVGGElement, unknown>('g.block-marker')
           .attr('transform', function() {
             const el = this as SVGGElement;
@@ -1021,6 +1026,26 @@ export default function RailwayMap({
             const el = this as SVGGElement;
             return `translate(${el.getAttribute('data-bx')},${el.getAttribute('data-by')}) scale(${1 / k})`;
           });
+        // ── Stroke soft cap (k≤capZoom: 자연 성장, k>capZoom: 화면픽셀 고정) ─
+        const capK = strokeCapZoomRef.current;
+        g.selectAll<SVGPathElement, unknown>('path.route-computed')
+          .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK));
+        g.selectAll<SVGPathElement, LanedSegment>('path.block-segment')
+          .attr('stroke-width', (d) => {
+            const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
+            const base  = capStrokeSvg(BLOCK_STROKE_SVG * style.widthScale, k, capK);
+            return d.properties.id === selectedBlockIdRef.current ? base * 1.6 : base;
+          });
+        g.selectAll<SVGPathElement, unknown>('path.catenary-cut')
+          .attr('stroke-width', capStrokeSvg(CATENARY_STROKE_SVG, k, capK));
+        g.selectAll<SVGPathElement, unknown>('path.org-boundary')
+          .attr('stroke-width', capStrokeSvg(ORG_BOUNDARY_SVG, k, capK));
+        // 위험/보호지구도 동일한 cap 적용 (누락 시 고줌에서 화면 전체를 덮음)
+        g.selectAll<SVGPathElement, unknown>('path.protect-zone')
+          .attr('stroke-width', capStrokeSvg(PROTECT_ZONE_SVG, k, capK));
+        g.selectAll<SVGPathElement, unknown>('path.danger-zone')
+          .attr('stroke-width', capStrokeSvg(DANGER_ZONE_SVG, k, capK));
+
         // 줌 레벨에 따른 레이어 전환
         // 전국(< 1.5): 집계 배지만 표시, 선·마커·밴드 숨김
         // 지역(≥ 1.5): 선·마커 표시, 집계 배지 숨김
@@ -1189,7 +1214,7 @@ export default function RailwayMap({
 
       d3.select(this)
         .attr('display', null)
-        .attr('d', buildTBSymbol(coords, bt, st, proj, k));
+        .attr('d', buildTBSymbol(coords, bt, st, proj));
     });
 
     // 구간 시설물 이름 레이블 — 선과 동일 조건 + 줌 충분 시 표시
@@ -1238,9 +1263,10 @@ export default function RailwayMap({
 
       // 심볼 폭 + 3px 여백 (현재 zoom k 기준)
       const lbt = d.properties.bore_type ?? '복선';
-      const lhg = trackHalfGapPx(k);
-      const lhw = lbt === '복선' ? (lhg + ROUTE_STROKE_PX / 2 + 2) : (ROUTE_STROKE_PX / 2 + 3);
-      const lOff = (lhw + 3) / k;
+      const lhw = lbt === '복선'
+        ? (TRACK_HALF_GAP_SVG + ROUTE_STROKE_SVG / 2 + 0.5)
+        : (ROUTE_STROKE_SVG / 2 + 0.8);
+      const lOff = lhw + 0.8;  // SVG 단위 오프셋 (zoom과 함께 스케일)
 
       const llx = lmid[0] + lSign * lnx * lOff;
       const lly = lmid[1] + lSign * lny * lOff;
@@ -1340,13 +1366,12 @@ export default function RailwayMap({
       .join('path')
       .attr('class', (d) => `route-computed route-computed-${d.routeCode}`)
       .attr('d', (d) => {
-        const off = trackOffsetsPx(d.trackCount, k)[d.trackIndex] ?? 0;
-        return buildTrackPath(d.coords, off, proj, k);
+        const off = trackOffsetsSvg(d.trackCount)[d.trackIndex] ?? 0;
+        return buildTrackPath(d.coords, off, proj);
       })
       .attr('fill', 'none')
       .attr('stroke', (d) => computedRouteStroke(d.lineType, d.hasCatenary, routeColorsRef.current))
-      .attr('stroke-width', ROUTE_STROKE_PX)
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', ROUTE_STROKE_SVG)
       .attr('display', (d) => d.hidden ? 'none' : null);
   }, [allRailGeo, hiddenLineTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1389,7 +1414,9 @@ export default function RailwayMap({
   // ── 조직 관할 경계 업데이트 ─────────────────────────────────────────────
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
-    const g = d3.select(gRef.current);
+    const g    = d3.select(gRef.current);
+    const capK = strokeCapZoomRef.current;
+    const k    = scaleRef.current;
     const layer = g.select<SVGGElement>('.org-boundaries');
     layer.selectAll('*').remove();
     if (!showOrgBoundary || !orgBoundary || orgBoundary.features.length === 0) return;
@@ -1403,10 +1430,9 @@ export default function RailwayMap({
       .attr('d', (d) => pathGen(d as any) ?? '')
       .attr('fill', 'none')
       .attr('stroke', (d) => FIELD_COLORS[d.properties.field] ?? '#2563eb')
-      .attr('stroke-width', 4)
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', capStrokeSvg(ORG_BOUNDARY_SVG, k, capK))
       .attr('opacity', 0.7)
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .append('title')
       .text((d) => {
         const p = d.properties;
@@ -1418,44 +1444,43 @@ export default function RailwayMap({
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
     const proj = projRef.current;
-    const k = scaleRef.current;
-    const g = d3.select(gRef.current);
+    const k    = scaleRef.current;
+    const capK = strokeCapZoomRef.current;
+    const g    = d3.select(gRef.current);
     const layer = g.select<SVGGElement>('.danger-zones');
     layer.selectAll('*').remove();
     if (!showDangerZone || !blockSegments || blockSegments.features.length === 0) return;
 
-    // 보호지구 (30m: 너비 20px, 투명도 0.10) — 앰버-노란 단일 색상
+    // 보호지구 — SVG 단위, zoom과 함께 스케일
     layer
       .selectAll<SVGPathElement, BlockSegmentFeature>('path.protect-zone')
       .data(blockSegments.features)
       .join('path')
       .attr('class', 'protect-zone')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj)
       )
       .attr('fill', 'none')
       .attr('stroke', TRACK_BLOCK_COLOR_S)
-      .attr('stroke-width', 20)
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', capStrokeSvg(PROTECT_ZONE_SVG, k, capK))
       .attr('opacity', 0.10)
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .style('pointer-events', 'none');
 
-    // 위험지구 (2m: 너비 8px, 투명도 0.25)
+    // 위험지구
     layer
       .selectAll<SVGPathElement, BlockSegmentFeature>('path.danger-zone')
       .data(blockSegments.features)
       .join('path')
       .attr('class', 'danger-zone')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj)
       )
       .attr('fill', 'none')
       .attr('stroke', TRACK_BLOCK_COLOR_S)
-      .attr('stroke-width', 8)
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', capStrokeSvg(DANGER_ZONE_SVG, k, capK))
       .attr('opacity', 0.25)
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .style('pointer-events', 'none');
   }, [showDangerZone, blockSegments]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1463,16 +1488,19 @@ export default function RailwayMap({
   useEffect(() => {
     if (!gRef.current || !projRef.current) return;
     const proj = projRef.current;
-    const k = scaleRef.current;
-    const g = d3.select(gRef.current);
-    const bandLayer   = g.select<SVGGElement>('.block-bands');
-    const layer       = g.select<SVGGElement>('.block-segments');
-    const markerLayer = g.select<SVGGElement>('.block-markers');
-    const badgeLayer  = g.select<SVGGElement>('.block-route-badges');
+    const g    = d3.select(gRef.current);
+    const k    = scaleRef.current;
+    const capK = strokeCapZoomRef.current;
+    const bandLayer      = g.select<SVGGElement>('.block-bands');
+    const layer          = g.select<SVGGElement>('.block-segments');
+    const markerLayer    = g.select<SVGGElement>('.block-markers');
+    const badgeLayer     = g.select<SVGGElement>('.block-route-badges');
+    const pzLayer        = g.select<SVGGElement>('.protection-zone-works');
     bandLayer.selectAll('*').remove();
     layer.selectAll('*').remove();
     markerLayer.selectAll('*').remove();
     badgeLayer.selectAll('*').remove();
+    pzLayer.selectAll('*').remove();
 
     blockSegmentsRef.current = blockSegments;
     if (!blockSegments || blockSegments.features.length === 0) {
@@ -1482,19 +1510,23 @@ export default function RailwayMap({
       return;
     }
 
-    // ── 전차선단전 / 선로차단 분리 ────────────────────────────────────────
-    const catenaryCutFeats = blockSegments.features.filter(
+    // ── 전차선단전 / 보호지구작업 / 선로차단 분리 ─────────────────────────
+    const catenaryCutFeats  = blockSegments.features.filter(
       f => CATENARY_BLOCK_TYPES.has(f.properties.block_type)
     );
-    const trackBlockFeats  = blockSegments.features.filter(
+    const protectionZoneFeats = blockSegments.features.filter(
+      f => f.properties.block_type === '보호지구작업'
+    );
+    const trackBlockFeats = blockSegments.features.filter(
       f => !CATENARY_BLOCK_TYPES.has(f.properties.block_type)
+        && f.properties.block_type !== '보호지구작업'
     );
 
     // 전차선단전: 녹색, 노선 위(오프셋 없음)에 중간 두께로 렌더링
     const catenaryCutLayer = g.select<SVGGElement>('.catenary-cuts');
     catenaryCutLayer.selectAll('*').remove();
     if (catenaryCutFeats.length > 0) {
-      const CATENARY_WIDTH_PX = 3.0;  // 노선(1.5px)의 2배
+      // 히트 영역 (넓게 — SVG 단위)
       catenaryCutLayer
         .selectAll<SVGPathElement, BlockSegmentFeature>('path.catenary-cut-hit')
         .data(catenaryCutFeats)
@@ -1507,12 +1539,13 @@ export default function RailwayMap({
           return d3.line()(pts) ?? '';
         })
         .attr('fill', 'none').attr('stroke', 'transparent')
-        .attr('stroke-width', 16).attr('vector-effect', 'non-scaling-stroke')
+        .attr('stroke-width', capStrokeSvg(CATENARY_STROKE_SVG, k, capK) * 8)
         .style('cursor', 'pointer')
         .on('click', (event: MouseEvent, d: BlockSegmentFeature) => {
           event.stopPropagation();
           onBlockSegmentClick?.(d.properties.id);
         });
+      // 전차선단전 선 — SVG 단위, non-scaling-stroke 제거
       catenaryCutLayer
         .selectAll<SVGPathElement, BlockSegmentFeature>('path.catenary-cut')
         .data(catenaryCutFeats)
@@ -1526,10 +1559,9 @@ export default function RailwayMap({
         })
         .attr('fill', 'none')
         .attr('stroke', CATENARY_CUT_COLOR_S)
-        .attr('stroke-width', CATENARY_WIDTH_PX)
-        .attr('vector-effect', 'non-scaling-stroke')
+        .attr('stroke-width', capStrokeSvg(CATENARY_STROKE_SVG, k, capK))
         .attr('opacity', (d) => d.properties.id === selectedBlockId ? 1.0 : 0.85)
-        .attr('stroke-linecap', 'round')
+        .attr('stroke-linecap', 'butt')
         .style('cursor', 'pointer')
         .on('click', (event: MouseEvent, d: BlockSegmentFeature) => {
           event.stopPropagation();
@@ -1548,44 +1580,42 @@ export default function RailwayMap({
     const bands = buildBandData(lanedSegs);
     bandDataRef.current = bands;
 
-    // ① 투명 히트 영역 — 레인 너비보다 넓게 설정하여 클릭 영역 확보
+    // ① 투명 히트 영역 — SVG 단위, 클릭하기 충분한 두께
     layer
       .selectAll<SVGPathElement, LanedSegment>('path.block-segment-hit')
       .data(lanedSegs)
       .join('path')
       .attr('class', 'block-segment-hit')
-      .attr('d', (d) => buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k, d._lane))
+      .attr('d', (d) => buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, d._lane, d.properties.block_type))
       .attr('fill', 'none')
       .attr('stroke', 'transparent')
-      .attr('stroke-width', Math.max(16, laneWidthPx(k) * 3))
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', capStrokeSvg(BLOCK_STROKE_SVG, k, capK) * 4)
       .style('cursor', 'pointer')
       .on('click', function(event: MouseEvent, d: LanedSegment) {
         event.stopPropagation();
         onBlockSegmentClick?.(d.properties.id);
       });
 
-    // ② 선로차단 노란(앰버)선 — 선로 이름으로 위치(상선=좌/하선=우) 구분
+    // ② 선로차단 노란(앰버)선 — SVG 단위, non-scaling-stroke 제거
     layer
       .selectAll<SVGPathElement, LanedSegment>('path.block-segment')
       .data(lanedSegs)
       .join('path')
       .attr('class', 'block-segment')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, k, d._lane)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.properties.track, d.properties.route_track_count, proj, d._lane, d.properties.block_type)
       )
       .attr('fill', 'none')
-      .attr('stroke', TRACK_BLOCK_COLOR_S)  // 앰버-노란 단일 색상
+      .attr('stroke', TRACK_BLOCK_COLOR_S)
       .attr('stroke-width', (d) => {
         const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
-        const base  = laneWidthPx(k) * style.widthScale;
+        const base  = capStrokeSvg(BLOCK_STROKE_SVG * style.widthScale, k, capK);
         return d.properties.id === selectedBlockId ? base * 1.6 : base;
       })
       .attr('stroke-dasharray', (d) => {
         const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
         return style.dashArray;
       })
-      .attr('vector-effect', 'non-scaling-stroke')
       .attr('opacity', (d) => {
         const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
         const isSelected   = d.properties.id === selectedBlockId;
@@ -1594,7 +1624,7 @@ export default function RailwayMap({
         if (!isHighlighted) return style.opacity * 0.25;  // 같은 사업 건 아닌 것 흐리게
         return style.opacity;
       })
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .style('cursor', 'pointer')
       .on('click', function(event: MouseEvent, d: LanedSegment) {
         event.stopPropagation();
@@ -1623,13 +1653,17 @@ export default function RailwayMap({
       });
 
     markers.each(function(d) {
-      // 레인 오프셋이 적용된 경로의 중간점 계산
+      // 마커 위치: 선로 오프셋에서 0.3×gap 추가 외방으로 이동
+      const trackSvgOff   = blockSegmentOffsetSvg(d.properties.track, d.properties.route_track_count, d._lane, d.properties.block_type);
+      const isUp          = isUpTrack(d.properties.track);
+      const markerExtraOff = TRACK_HALF_GAP_SVG * 1.0 * (isUp ? -1 : 1); // 선로 외방 1배 이격
+      const markerSvgOff  = trackSvgOff + markerExtraOff;
+
       const offsetCoords = (() => {
         const pts = (d.geometry.coordinates as [number, number][])
           .map(([lon, lat]) => proj([lon, lat]))
           .filter((p): p is [number, number] => p !== null);
         if (pts.length < 2) return null;
-        const svgOff = blockSegmentOffsetSvg(d.properties.track, d.properties.route_track_count, d._lane, k);
         return pts.map((p, i) => {
           let dx: number, dy: number;
           if (i === 0)                   { dx = pts[1][0] - pts[0][0]; dy = pts[1][1] - pts[0][1]; }
@@ -1637,11 +1671,11 @@ export default function RailwayMap({
           else                           { dx = pts[i+1][0] - pts[i-1][0]; dy = pts[i+1][1] - pts[i-1][1]; }
           const len = Math.sqrt(dx*dx + dy*dy);
           if (len < 1e-6) return p;
-          return [p[0] + svgOff * (-dy/len), p[1] + svgOff * (dx/len)] as [number, number];
+          return [p[0] + markerSvgOff * (-dy/len), p[1] + markerSvgOff * (dx/len)] as [number, number];
         });
       })();
       if (!offsetCoords) return;
-      const mid = svgPolylineMidpoint(offsetCoords);  // 이미 SVG 좌표 → 재투영 없음
+      const mid = svgPolylineMidpoint(offsetCoords);
       if (!mid) return;
 
       const el = d3.select(this);
@@ -1649,22 +1683,28 @@ export default function RailwayMap({
         .attr('transform', `translate(${mid[0]},${mid[1]}) scale(${1 / k})`);
       const isSelected     = d.properties.id === selectedBlockId;
       const isHighlighted  = !highlightedBlockIds || highlightedBlockIds.has(d.properties.id);
-      const color = DANGER_MARKER_COLORS_S[d.properties.danger_level ?? ''] ?? DANGER_MARKER_DEFAULT_S;
-      const s = isSelected ? 7 : 5;
-      el.attr('opacity', isHighlighted ? 1.0 : 0.2);  // 사업 묶음 외 마커 흐리게
+      // 마커 색상: 분야별 (시설=노란, 전기=녹색, 건축=보라)
+      const FIELD_MARKER_COLORS: Record<string, string> = {
+        '시설': '#ca8a04',   // 노란
+        '전기': '#16a34a',   // 녹색
+        '건축': '#7c3aed',   // 보라
+      };
+      const color = FIELD_MARKER_COLORS[d.properties.field] ?? DANGER_MARKER_DEFAULT_S;
+      // 크기 2배 (기존 5→10, 7→14)
+      const s = isSelected ? 14 : 10;
+      el.attr('opacity', isHighlighted ? 1.0 : 0.2);
       el.append('circle').attr('r', s + 5).attr('fill', 'transparent');
       if (isSelected) {
         el.append('polygon')
           .attr('points', `0,${-(s + 4)} ${s + 4},0 0,${s + 4} ${-(s + 4)},0`)
           .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2.5)
-          .attr('opacity', 0.55).attr('vector-effect', 'non-scaling-stroke');
+          .attr('opacity', 0.55);
       }
       el.append('polygon')
         .attr('points', `0,${-s} ${s},0 0,${s} ${-s},0`)
         .attr('fill', color).attr('stroke', 'white')
-        .attr('stroke-width', isSelected ? 2.5 : 1.5)
-        .attr('vector-effect', 'non-scaling-stroke');
-      // 마커 위에 분야 약자 표시 (병행작업 구분)
+        .attr('stroke-width', isSelected ? 2.5 : 1.5);
+      // 분야 약자 (시/전/건)
       el.append('text')
         .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
         .attr('font-size', `${s * 1.1}px`).attr('font-weight', 'bold').attr('fill', 'white')
@@ -1689,20 +1729,111 @@ export default function RailwayMap({
       .join('path')
       .attr('class', 'block-band')
       .attr('d', (d) =>
-        buildOffsetPath(d.geometry.coordinates as [number, number][], d.track, d.routeTrackCount, proj, k, d.maxLane / 2)
+        buildOffsetPath(d.geometry.coordinates as [number, number][], d.track, d.routeTrackCount, proj, d.maxLane / 2)
       )
       .attr('fill', 'none')
       .attr('stroke', (d) => DANGER_MARKER_COLORS_S[d.worstDangerLevel ?? ''] ?? DANGER_MARKER_DEFAULT_S)
-      .attr('stroke-width', (d) => {
-        const w = laneWidthPx(k);
-        return (d.maxLane + 1) * (w + LANE_GAP_PX) / k;
-      })
+      .attr('stroke-width', (d) => (d.maxLane + 1) * (capStrokeSvg(BLOCK_STROKE_SVG, k, capK) + LANE_GAP_SVG))
       .attr('opacity', 0.12)
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .style('pointer-events', 'none');
     bandLayer.attr('display', k >= 1.5 && k < 4 ? null : 'none');
 
-    // ⑤ 노선별 집계 배지 (zoom < 1.5)
+    // ⑤ 보호지구작업 — 사각형 + 45도 사선 해칭
+    // SVG <defs>에 해칭 패턴 등록 (이미 있으면 skip)
+    const svgSel = d3.select(svgRef.current!);
+    if (svgSel.select('defs #pz-hatch').empty()) {
+      const defs = svgSel.select<SVGDefsElement>('defs').empty()
+        ? svgSel.insert('defs', ':first-child')
+        : svgSel.select<SVGDefsElement>('defs');
+      const pat = defs.append('pattern')
+        .attr('id', 'pz-hatch')
+        .attr('patternUnits', 'userSpaceOnUse')
+        .attr('patternTransform', `scale(${1 / k})`) // zoom에 맞춰 스케일
+        .attr('width', 8).attr('height', 8);
+      pat.append('path')
+        .attr('d', 'M-2,2 l4,-4 M0,8 l8,-8 M6,10 l4,-4')
+        .attr('stroke', TRACK_BLOCK_COLOR_S)
+        .attr('stroke-width', 1.5)
+        .attr('opacity', 0.75);
+    } else {
+      // 줌 변경 시 패턴 스케일 갱신
+      svgSel.select('#pz-hatch').attr('patternTransform', `scale(${1 / k})`);
+    }
+
+    if (protectionZoneFeats.length > 0 && k >= 1.5) {
+      // 보호지구 사각형 높이 = 2 × TRACK_HALF_GAP (SVG 단위)
+      const pzHeight = TRACK_HALF_GAP_SVG * 2;
+      pzLayer
+        .selectAll<SVGPathElement, BlockSegmentFeature>('path.pz-rect')
+        .data(protectionZoneFeats)
+        .join('path')
+        .attr('class', 'pz-rect')
+        .attr('d', (d) => {
+          // 중심선 → 오프셋 경로 2개(상단/하단) → 직사각형 생성
+          const track = d.properties.track;
+          const rtc   = d.properties.route_track_count;
+          const centerSvg = blockSegmentOffsetSvg(track, rtc, 0, '보호지구작업');
+          const isUp = isUpTrack(track);
+          const half = pzHeight / 2;
+          const topSvg = centerSvg + (isUp ? -half : half);  // 외방
+          const botSvg = centerSvg + (isUp ?  half : -half); // 내방(선로 쪽)
+
+          const makePts = (off: number) => {
+            const coords = d.geometry.coordinates as [number, number][];
+            return coords.map(([lon, lat]) => {
+              const p = proj([lon, lat]);
+              if (!p) return null;
+              const pts = coords.map(c => proj(c as [number,number])).filter(Boolean) as [number,number][];
+              const idx = coords.indexOf([lon,lat]);
+              return p;
+            }).filter(Boolean) as [number,number][];
+          };
+
+          // 좌표 배열 → 오프셋 적용
+          const applyOffset = (svgOff: number): [number,number][] => {
+            const coords = d.geometry.coordinates as [number, number][];
+            const pts = coords.map(c => proj(c as [number,number])).filter((p): p is [number,number] => p !== null);
+            return pts.map((p, i) => {
+              let dx: number, dy: number;
+              if (i===0){ dx=pts[1][0]-pts[0][0]; dy=pts[1][1]-pts[0][1]; }
+              else if (i===pts.length-1){ dx=pts[i][0]-pts[i-1][0]; dy=pts[i][1]-pts[i-1][1]; }
+              else{ dx=pts[i+1][0]-pts[i-1][0]; dy=pts[i+1][1]-pts[i-1][1]; }
+              const len=Math.sqrt(dx*dx+dy*dy);
+              if (len<1e-6) return p;
+              const nx=-dy/len, ny=dx/len;
+              return [p[0]+svgOff*nx, p[1]+svgOff*ny] as [number,number];
+            });
+          };
+
+          const topPts = applyOffset(topSvg);
+          const botPts = applyOffset(botSvg);
+          if (topPts.length < 2 || botPts.length < 2) return '';
+
+          // 직사각형: topPts 순방향 + botPts 역방향
+          const fwd = topPts.map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
+          const rev = [...botPts].reverse().map(p => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(' L ');
+          return `M ${fwd} L ${rev} Z`;
+        })
+        .attr('fill', 'url(#pz-hatch)')
+        .attr('stroke', TRACK_BLOCK_COLOR_S)
+        .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK))
+        .attr('stroke-linecap', 'butt')
+        .attr('opacity', (d) => d.properties.id === selectedBlockId ? 1.0 : 0.8)
+        .style('cursor', 'pointer')
+        .on('click', (event: MouseEvent, d: BlockSegmentFeature) => {
+          event.stopPropagation();
+          onBlockSegmentClick?.(d.properties.id);
+        })
+        .append('title')
+        .text((d) => {
+          const p = d.properties;
+          return `[보호지구작업] ${p.route_name}  ${p.display_km}\n${p.work_date} ${p.start_time}~${p.end_time}  ${p.field}`;
+        });
+    }
+    pzLayer.attr('display', k >= 1.5 ? null : 'none');
+
+    // ⑥ 노선별 집계 배지 (zoom < 1.5)
     type BadgeData = { routeName: string; count: number; worstLevel: string | null; cx: number; cy: number };
     const DANGER_PRIORITY: Record<string, number> = { A: 3, B: 2, C: 1 };
 
@@ -1795,7 +1926,8 @@ export default function RailwayMap({
     if (mergedFacilityFeatures.length === 0) return;
 
     const pathGen = d3.geoPath().projection(projRef.current);
-    const k = scaleRef.current;
+    const k    = scaleRef.current;
+    const capK = strokeCapZoomRef.current;
 
     // 노선코드 → 선로수 맵 갱신 (각 선로에 개별 터널·교량 렌더링에 사용)
     if (allRailGeo) {
@@ -1835,7 +1967,7 @@ export default function RailwayMap({
         const coords = (d.geometry as { type: 'LineString'; coordinates: [number, number][] }).coordinates;
         const bt = d.properties.bore_type ?? '복선';
         const st = d.properties.station_type ?? '터널';
-        return buildTBSymbol(coords, bt, st, projRef.current!, k);
+        return buildTBSymbol(coords, bt, st, projRef.current!);
       })
       .attr('fill', 'none')              // 반드시 채움 없음
       .attr('stroke', '#111111')         // 검은 윤곽선만
@@ -1856,10 +1988,9 @@ export default function RailwayMap({
       .attr('d', (d) => pathGen(d as any) ?? '')
       .attr('fill', 'none')
       .attr('stroke', (d) => isTB(d) ? 'transparent' : facilityColor(d.properties.type, d.properties.station_type, facilityColorsRef.current))
-      .attr('stroke-width', (d) => isTB(d) ? 20 : 4)
-      .attr('vector-effect', 'non-scaling-stroke')
+      .attr('stroke-width', (d) => isTB(d) ? capStrokeSvg(PROTECT_ZONE_SVG, k, capK) : capStrokeSvg(DANGER_ZONE_SVG / 2, k, capK))
       .attr('opacity', (d) => isTB(d) ? 0 : 0.8)
-      .attr('stroke-linecap', 'round')
+      .attr('stroke-linecap', 'butt')
       .attr('display', 'none')
       .style('cursor', 'pointer')
       .on('click', function(event: MouseEvent, d: FacilityFeature) {
@@ -1922,11 +2053,10 @@ export default function RailwayMap({
         const sign = ny < 0 ? 1 : -1;
 
         const bt = d.properties.bore_type ?? '복선';
-        const halfGapK = trackHalfGapPx(k);
-        const hwPx = bt === '복선'
-          ? (halfGapK + ROUTE_STROKE_PX / 2 + 2)
-          : (ROUTE_STROKE_PX / 2 + 3);
-        const labelOffsetSvg = (hwPx + 3) / k;  // 심볼 외곽 + 3px 여백 (절반으로 줄임)
+        const hw = bt === '복선'
+          ? (TRACK_HALF_GAP_SVG + ROUTE_STROKE_SVG / 2 + 0.5)
+          : (ROUTE_STROKE_SVG / 2 + 0.8);
+        const labelOffsetSvg = hw + 0.8;  // SVG 단위 오프셋
 
         const lx = mid[0] + sign * nx * labelOffsetSvg;
         const ly = mid[1] + sign * ny * labelOffsetSvg;

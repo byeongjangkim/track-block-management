@@ -5,6 +5,16 @@ from pydantic import BaseModel, field_validator, model_validator
 # 선로 이름 유효 값
 VALID_TRACKS = {'상선', '하선', '상1', '상2', '상3', '하1', '하2', '하3'}
 
+# 유효한 block_type 목록
+VALID_BLOCK_TYPES = {
+    '선로차단',       # 노선 위 직접 표시 (장비/인력/기계 모두)
+    '전차선단전',     # 변전소간 전차선 단전 (녹색, 노선 위)
+    '작업구간설정',   # 차단 없는 인력/기계 이격 표시 (최외방 +0.5×gap)
+    '보호지구작업',   # 선로 30m 이내 작업 (최외방 +1.0×gap, 사각형 해칭)
+    '임시완속',
+    '속도제한',
+}
+
 # block_type 중 선로차단 및 전차선단전에 해당하는 것들
 TRACK_BLOCK_TYPES = {'선로차단', '전차선단전'}
 
