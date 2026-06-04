@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).parent.parent.parent  # backend/
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite:///./db.sqlite3"
+    DATABASE_URL: str = "postgresql+psycopg2://localhost/track_block"
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     UPLOAD_DIR: Path = BASE_DIR / "uploads"

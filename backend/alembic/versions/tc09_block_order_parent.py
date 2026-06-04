@@ -20,21 +20,22 @@ import sqlalchemy as sa
 
 
 def upgrade():
-    # parent_id는 이미 존재하는 경우 스킵 (이전 실패 시도에서 추가됨)
-    import sqlalchemy as _sa
-    from alembic import op as _op
-    conn = _op.get_bind()
-    cols = [row[1] for row in conn.execute(_sa.text("PRAGMA table_info(block_orders)")).fetchall()]
-    if 'parent_id' not in cols:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing = {c['name'] for c in inspector.get_columns('block_orders')}
+
+    # parent_id는 SQLite에서 이전 실패 시도로 이미 추가됐을 수 있으므로 존재 확인 후 추가
+    if 'parent_id' not in existing:
         op.add_column('block_orders', sa.Column('parent_id', sa.Integer(), nullable=True))
-    # 투입장비 명칭 (작업차량)
-    op.add_column('block_orders',
-        sa.Column('equipment_name', sa.String(100), nullable=True))
-    # 열차서행
-    op.add_column('block_orders',
-        sa.Column('speed_restriction', sa.Integer(), nullable=True))       # km/h
-    op.add_column('block_orders',
-        sa.Column('speed_restriction_note', sa.String(200), nullable=True))
+    if 'equipment_name' not in existing:
+        op.add_column('block_orders',
+            sa.Column('equipment_name', sa.String(100), nullable=True))
+    if 'speed_restriction' not in existing:
+        op.add_column('block_orders',
+            sa.Column('speed_restriction', sa.Integer(), nullable=True))
+    if 'speed_restriction_note' not in existing:
+        op.add_column('block_orders',
+            sa.Column('speed_restriction_note', sa.String(200), nullable=True))
 
 
 def downgrade():

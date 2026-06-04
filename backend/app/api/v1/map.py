@@ -58,8 +58,8 @@ def _get_geometry_center_only(db, line_type: str | None) -> dict:
             FROM rail_baseline_points rbp
             JOIN rail_routes rr ON rr.id = rbp.rail_route_id
             WHERE rbp.point_type IN {_CENTER_ONLY_POINT_TYPES}
-              AND rbp.is_render_anchor = 1
-              AND rr.is_active = 1
+              AND rbp.is_render_anchor = TRUE
+              AND rr.is_active = TRUE
               {where_type}
             ORDER BY rbp.rail_route_id, rbp.segment_no, rbp.kp, rbp.seq
         """),
@@ -156,7 +156,7 @@ def get_all_rail_routes_geometry(
                 rcg.seq
             FROM rail_computed_geometry rcg
             JOIN rail_routes rr ON rr.id = rcg.rail_route_id
-            WHERE rcg.lod = :lod AND rr.is_active = 1 {where_type}
+            WHERE rcg.lod = :lod AND rr.is_active = TRUE {where_type}
             ORDER BY rcg.rail_route_id, rcg.seq
         """),
         {"lod": lod, **({"line_type": line_type} if line_type else {})},
@@ -322,7 +322,7 @@ def get_all_rail_stations(
             JOIN rail_routes rr ON rr.id = rbp.rail_route_id
             JOIN rail_stations rs ON rs.id = rbp.station_id
             WHERE rbp.point_type = 'station_center'
-              AND rbp.is_interpolation_anchor = 1
+              AND rbp.is_interpolation_anchor = TRUE
               AND rbp.lat IS NOT NULL
               AND rbp.lon IS NOT NULL
               AND rbp.station_id IS NOT NULL
@@ -380,7 +380,7 @@ def get_all_rail_facility_items(
             FROM rail_facilities rf
             JOIN rail_routes rr ON rr.id = rf.rail_route_id
             JOIN rail_facility_classifications c ON c.id = rf.classification_id
-            WHERE rf.is_active = 1 AND rf.kp_start IS NOT NULL
+            WHERE rf.is_active = TRUE AND rf.kp_start IS NOT NULL
             ORDER BY rr.korail_route_code, rf.kp_start
         """)
     ).fetchall()
@@ -546,7 +546,7 @@ def _interpolate_rail_kp(
             SELECT lat, lon, kp
             FROM rail_baseline_points
             WHERE rail_route_id=:rail_route_id
-              AND is_interpolation_anchor = 1
+              AND is_interpolation_anchor = TRUE
               {pt_filter}
             ORDER BY segment_no, kp, seq
         """),
@@ -585,7 +585,7 @@ def _rail_kp_range_coords(
             SELECT lat, lon, kp
             FROM rail_baseline_points
             WHERE rail_route_id=:rail_route_id
-              AND is_render_anchor = 1
+              AND is_render_anchor = TRUE
               {pt_filter}
             ORDER BY segment_no, kp, seq
         """),

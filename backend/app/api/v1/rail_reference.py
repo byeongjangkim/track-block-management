@@ -294,7 +294,7 @@ def _rebuild_computed_geometry_route(db: Session, rail_route_id: int) -> None:
             SELECT segment_no, kp, lat, lon
             FROM rail_baseline_points
             WHERE rail_route_id = :route_id
-              AND is_interpolation_anchor = 1
+              AND is_interpolation_anchor = TRUE
             ORDER BY segment_no, kp
         """),
         {"route_id": rail_route_id},
@@ -508,8 +508,8 @@ def get_reference_summary(
                 SELECT
                     point_type,
                     COUNT(*) AS total,
-                    SUM(CASE WHEN is_render_anchor = 1 THEN 1 ELSE 0 END) AS render_anchor_count,
-                    SUM(CASE WHEN is_interpolation_anchor = 1 THEN 1 ELSE 0 END) AS interpolation_anchor_count
+                    SUM(CASE WHEN is_render_anchor THEN 1 ELSE 0 END) AS render_anchor_count,
+                    SUM(CASE WHEN is_interpolation_anchor = TRUE THEN 1 ELSE 0 END) AS interpolation_anchor_count
                 FROM rail_baseline_points
                 GROUP BY point_type
                 ORDER BY total DESC, point_type
@@ -532,7 +532,7 @@ def get_reference_summary(
                         FROM (
                             SELECT rail_route_id
                             FROM rail_baseline_points
-                            WHERE is_render_anchor = 1
+                            WHERE is_render_anchor = TRUE
                             GROUP BY rail_route_id
                             HAVING COUNT(*) >= 2
                         ) renderable
@@ -635,7 +635,7 @@ def list_reference_routes(
                     SELECT
                         rail_route_id,
                         COUNT(*) AS baseline_point_count,
-                        SUM(CASE WHEN is_render_anchor = 1 THEN 1 ELSE 0 END) AS render_anchor_count,
+                        SUM(CASE WHEN is_render_anchor THEN 1 ELSE 0 END) AS render_anchor_count,
                         MIN(kp) AS baseline_kp_min,
                         MAX(kp) AS baseline_kp_max
                     FROM rail_baseline_points
@@ -1105,7 +1105,7 @@ def download_facility_template(
         text("""
             SELECT code, major_category, sub_category, detail_category, tertiary_category, geometry_type
             FROM rail_facility_classifications
-            WHERE is_active = 1
+            WHERE is_active = TRUE
             ORDER BY sort_order
         """)
     ).mappings().all()

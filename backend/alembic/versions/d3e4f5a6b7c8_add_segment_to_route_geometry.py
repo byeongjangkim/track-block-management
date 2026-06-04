@@ -25,7 +25,7 @@ def upgrade() -> None:
 
     op.execute("""
         CREATE TABLE route_geometry (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            id         SERIAL PRIMARY KEY,
             route_code TEXT    NOT NULL,
             lod        TEXT    NOT NULL,
             segment    INTEGER NOT NULL DEFAULT 0,
@@ -56,7 +56,7 @@ def downgrade() -> None:
 
     op.execute("""
         CREATE TABLE route_geometry (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            id         SERIAL PRIMARY KEY,
             route_code TEXT    NOT NULL,
             lod        TEXT    NOT NULL,
             seq        INTEGER NOT NULL,

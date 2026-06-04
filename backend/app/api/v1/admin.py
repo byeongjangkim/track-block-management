@@ -232,7 +232,7 @@ def rebuild_computed_geometry(
             text("""
                 SELECT segment_no, kp, lat, lon
                 FROM rail_baseline_points
-                WHERE rail_route_id = :rid AND is_interpolation_anchor = 1
+                WHERE rail_route_id = :rid AND is_interpolation_anchor = TRUE
                 ORDER BY segment_no, kp
             """),
             {"rid": route.id},
