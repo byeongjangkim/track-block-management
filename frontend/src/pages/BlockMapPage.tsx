@@ -142,8 +142,11 @@ export default function BlockMapPage() {
   const [searchParams] = useSearchParams();
 
   // ── 차단명령 필터 ───────────────────────────────────────────────────────────
-  const [workDate,       setWorkDate]       = useState(searchParams.get('date') ?? todayStr());
-  const [filterRouteId,  setFilterRouteId]  = useState<number | null>(null);
+  const [workDate,         setWorkDate]         = useState(searchParams.get('date') ?? todayStr());
+  const [filterRouteIds,   setFilterRouteIds]   = useState<Set<number>>(new Set());
+  const [routeFilterOpen,  setRouteFilterOpen]  = useState(false);
+  // 단일 노선 ID — useQuery queryKey/params에 직접 사용 (선언을 useQuery보다 앞에)
+  const singleFilterRouteId = filterRouteIds.size === 1 ? [...filterRouteIds][0] : null;
   const [filterImplementer, setFilterImplementer] = useState<string | null>(null);  // 시행주체
   const [filterWorkType,    setFilterWorkType]    = useState<string | null>(null);  // 작업형태
   const [filterField,    setFilterField]    = useState<string | null>(null);
@@ -157,6 +160,19 @@ export default function BlockMapPage() {
     const n   = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(n) ? n : null;
   });
+
+  // 노선 필터 팝오버 외부 클릭 시 닫힘
+  const routeFilterRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!routeFilterOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (routeFilterRef.current && !routeFilterRef.current.contains(e.target as Node)) {
+        setRouteFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [routeFilterOpen]);
 
   // ── 드래그 패널 ─────────────────────────────────────────────────────────────
   const mainRef  = useRef<HTMLDivElement>(null);
@@ -208,11 +224,11 @@ export default function BlockMapPage() {
   }, [routes, orgRouteCodes, isSuperuser]);
 
   const { data: blockOrders = [], isLoading: ordersLoading } = useQuery({
-    queryKey: ['block-orders-date', workDate, filterRouteId, filterImplementer, filterWorkType, filterField],
+    queryKey: ['block-orders-date', workDate, singleFilterRouteId, filterImplementer, filterWorkType, filterField],
     queryFn: () => fetchBlockOrders({
       date_from:   workDate,
       date_to:     workDate,
-      route_id:    filterRouteId ?? undefined,
+      route_id:    singleFilterRouteId ?? undefined,
       implementer: filterImplementer ?? undefined,
       work_type:   filterWorkType ?? undefined,
       field:       filterField ?? undefined,
@@ -233,21 +249,21 @@ export default function BlockMapPage() {
   }, [workDate]);
 
   const { data: extBlockOrders = [] } = useQuery({
-    queryKey: ['block-orders-ext', extDateFrom, extDateTo, filterRouteId],
+    queryKey: ['block-orders-ext', extDateFrom, extDateTo, singleFilterRouteId],
     queryFn: () => fetchBlockOrders({
       date_from: extDateFrom,
       date_to:   extDateTo,
-      route_id:  filterRouteId ?? undefined,
+      route_id:  singleFilterRouteId ?? undefined,
     }),
     enabled: !!selectedId,   // 선택된 건이 있을 때만 조회
     staleTime: 60_000,
   });
 
   const { data: blockSegments } = useQuery<BlockSegmentCollection>({
-    queryKey: ['block-segments', workDate, filterRouteId],
+    queryKey: ['block-segments', workDate, singleFilterRouteId],
     queryFn: () => fetchBlockSegments({
       work_date: workDate,
-      route_id:  filterRouteId ?? undefined,
+      route_id:  singleFilterRouteId ?? undefined,
     }),
     staleTime: 30_000,
   });
@@ -267,29 +283,49 @@ export default function BlockMapPage() {
     [routes],
   );
 
-  const filterRouteCode = useMemo(
-    () => (filterRouteId != null ? (routeMap.get(filterRouteId)?.code ?? null) : null),
-    [filterRouteId, routeMap],
+  // filterRouteNames: 시설물 feature의 route_name과 일치하는 노선명 Set
+  // (레거시 routes.code ≠ rail_routes.korail_route_code 불일치 방지 → name 비교)
+  const filterRouteNames = useMemo(
+    () => filterRouteIds.size === 0
+      ? null
+      : new Set([...filterRouteIds].map(id => routeMap.get(id)?.name).filter(Boolean) as string[]),
+    [filterRouteIds, routeMap],
   );
 
   // ── 위험등급 필터 파생 (onMapIds보다 먼저 정의) ─────────────────────────────
 
   const filteredBlockOrders = useMemo(() => {
-    if (filterDangerLevel === null) return blockOrders;
-    if (filterDangerLevel === 'none') return blockOrders.filter((bo) => bo.danger_level === null);
-    return blockOrders.filter((bo) => bo.danger_level === filterDangerLevel);
-  }, [blockOrders, filterDangerLevel]);
+    let result = blockOrders;
+    // 복수 노선 선택 시 클라이언트 필터 (서버는 1개만 지원)
+    if (filterRouteIds.size > 1) {
+      const names = filterRouteNames!;
+      result = result.filter((bo) => {
+        const name = bo.route_name ?? routeMap.get(bo.route_id)?.name;
+        return name != null && names.has(name);
+      });
+    }
+    if (filterDangerLevel === null) return result;
+    if (filterDangerLevel === 'none') return result.filter((bo) => bo.danger_level === null);
+    return result.filter((bo) => bo.danger_level === filterDangerLevel);
+  }, [blockOrders, filterDangerLevel, filterRouteIds, filterRouteNames, routeMap]);
 
   const filteredBlockSegments = useMemo((): BlockSegmentCollection | null => {
     if (!blockSegments) return null;
-    if (filterDangerLevel === null) return blockSegments;
-    const feats = blockSegments.features.filter((f) =>
-      filterDangerLevel === 'none'
-        ? f.properties.danger_level === null
-        : f.properties.danger_level === filterDangerLevel
-    );
+    let feats = blockSegments.features;
+    // 복수 노선 선택 시 클라이언트 필터
+    if (filterRouteIds.size > 1 && filterRouteNames) {
+      const names = filterRouteNames;
+      feats = feats.filter((f) => f.properties.route_name != null && names.has(f.properties.route_name));
+    }
+    if (filterDangerLevel !== null) {
+      feats = feats.filter((f) =>
+        filterDangerLevel === 'none'
+          ? f.properties.danger_level === null
+          : f.properties.danger_level === filterDangerLevel
+      );
+    }
     return { ...blockSegments, features: feats };
-  }, [blockSegments, filterDangerLevel]);
+  }, [blockSegments, filterDangerLevel, filterRouteIds, filterRouteNames]);
 
   const onMapIds = useMemo(
     () => new Set((filteredBlockSegments?.features ?? []).map((f) => f.properties.id)),
@@ -368,7 +404,7 @@ export default function BlockMapPage() {
       days:     seriesIds.length,
       ids:      new Set(seriesIds),
     };
-  }, [selectedOrder, extBlockOrders]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedOrder, extBlockOrders]);
 
   // ── 위험등급 업데이트 뮤테이션 ────────────────────────────────────────────────
 
@@ -647,24 +683,68 @@ export default function BlockMapPage() {
                   ))}
                 </div>
 
-                {/* 노선 필터 */}
-                <div>
-                  <div className="text-[10px] text-gray-400 mb-1">
-                    노선 필터
-                    {!isSuperuser && orgRouteCodes != null && (
-                      <span className="ml-1 text-blue-400">담당 {filteredRoutes.length}개</span>
+                {/* 노선 필터 — 멀티 선택 */}
+                <div className="relative" ref={routeFilterRef}>
+                  <div className="text-[10px] text-gray-400 mb-1 flex items-center justify-between">
+                    <span>
+                      노선 필터
+                      {!isSuperuser && orgRouteCodes != null && (
+                        <span className="ml-1 text-blue-400">담당 {filteredRoutes.length}개</span>
+                      )}
+                    </span>
+                    {filterRouteIds.size > 0 && (
+                      <button onClick={() => { setFilterRouteIds(new Set()); setSelectedId(null); }}
+                        className="text-[10px] text-blue-500 hover:text-blue-700">전체</button>
                     )}
                   </div>
-                  <select
-                    value={filterRouteId ?? ''}
-                    onChange={(e) => { setFilterRouteId(e.target.value ? Number(e.target.value) : null); setSelectedId(null); }}
-                    className="w-full border rounded px-2 py-1 text-xs"
+
+                  {/* 선택된 노선 태그 */}
+                  {filterRouteIds.size > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {[...filterRouteIds].map(id => {
+                        const r = routeMap.get(id);
+                        return r ? (
+                          <span key={id} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px]">
+                            {r.name}
+                            <button onClick={() => {
+                              const next = new Set(filterRouteIds); next.delete(id);
+                              setFilterRouteIds(next); setSelectedId(null);
+                            }} className="hover:text-blue-900">✕</button>
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
+
+                  {/* 팝오버 토글 버튼 */}
+                  <button
+                    onClick={() => setRouteFilterOpen(v => !v)}
+                    className="w-full border rounded px-2 py-1 text-xs text-left text-gray-600 flex items-center justify-between"
                   >
-                    <option value="">전체 노선</option>
-                    {filteredRoutes.map((r) => (
-                      <option key={r.id} value={r.id}>{r.name}</option>
-                    ))}
-                  </select>
+                    <span>{filterRouteIds.size === 0 ? '전체 노선' : `${filterRouteIds.size}개 선택`}</span>
+                    <span className="text-gray-400 text-[10px]">{routeFilterOpen ? '▲' : '▼'}</span>
+                  </button>
+
+                  {/* 체크박스 팝오버 */}
+                  {routeFilterOpen && (
+                    <div className="absolute z-50 left-0 right-0 mt-1 border rounded bg-white shadow-lg max-h-48 overflow-y-auto text-xs">
+                      {filteredRoutes.map((r) => (
+                        <label key={r.id} className="flex items-center gap-1.5 px-2 py-1 hover:bg-gray-50 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={filterRouteIds.has(r.id)}
+                            onChange={(e) => {
+                              const next = new Set(filterRouteIds);
+                              if (e.target.checked) next.add(r.id); else next.delete(r.id);
+                              setFilterRouteIds(next); setSelectedId(null);
+                            }}
+                            className="accent-blue-600"
+                          />
+                          <span className="truncate">{r.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -778,7 +858,7 @@ export default function BlockMapPage() {
             {filteredBlockOrders.map((bo) => {
               const isSelected = selectedId === bo.id;
               const isOnMap    = onMapIds.has(bo.id);
-              const routeName  = (bo as any).route_name
+              const routeName  = bo.route_name
                 ?? routeMap.get(bo.route_id)?.name
                 ?? (bo.route_id != null ? `노선 #${bo.route_id}` : '노선 미지정');
               return (
@@ -845,7 +925,7 @@ export default function BlockMapPage() {
           showOrgBoundary={showOrgBoundary && mapOrgId != null}
           hiddenLineTypes={hiddenLineTypes}
           facilityFilter={showFacilitiesAny ? facilityFilter : null}
-          filterRouteCode={filterRouteCode}
+          filterRouteCode={filterRouteNames}
           showDangerZone={showDangerZone}
           blockSegments={filteredBlockSegments}
           selectedBlockId={selectedId}
@@ -895,7 +975,7 @@ export default function BlockMapPage() {
             >
               <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
                 <span className="font-semibold text-gray-800 text-xs truncate">
-                  {(selectedOrder as any).route_name
+                  {selectedOrder.route_name
                     ?? routeMap.get(selectedOrder.route_id)?.name
                     ?? (selectedOrder.route_id != null ? `노선 #${selectedOrder.route_id}` : '노선 미지정')}
                 </span>

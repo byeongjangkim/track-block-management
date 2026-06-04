@@ -59,6 +59,7 @@ def _get_geometry_center_only(db, line_type: str | None) -> dict:
             JOIN rail_routes rr ON rr.id = rbp.rail_route_id
             WHERE rbp.point_type IN {_CENTER_ONLY_POINT_TYPES}
               AND rbp.is_render_anchor = 1
+              AND rr.is_active = 1
               {where_type}
             ORDER BY rbp.rail_route_id, rbp.segment_no, rbp.kp, rbp.seq
         """),
@@ -155,7 +156,7 @@ def get_all_rail_routes_geometry(
                 rcg.seq
             FROM rail_computed_geometry rcg
             JOIN rail_routes rr ON rr.id = rcg.rail_route_id
-            WHERE rcg.lod = :lod {where_type}
+            WHERE rcg.lod = :lod AND rr.is_active = 1 {where_type}
             ORDER BY rcg.rail_route_id, rcg.seq
         """),
         {"lod": lod, **({"line_type": line_type} if line_type else {})},
@@ -448,18 +449,15 @@ def get_org_boundaries(
         .all()
     )
 
+    rail_route_ids = {rng.rail_route_id for rng in ranges}
+    rail_route_map = {
+        r.id: r
+        for r in db.query(RailRoute).filter(RailRoute.id.in_(rail_route_ids)).all()
+    }
+
     features = []
     for rng in ranges:
-        route = db.query(Route).filter(Route.id == rng.route_id).first()
-        if not route:
-            continue
-
-        # rail_routes 이름으로 매칭 (괄호 접미사 제거 후 재시도: "경부고속선 (KTX)" → "경부고속선")
-        base_name = re.sub(r'\s*\([^)]*\)\s*$', '', route.name).strip()
-        rail_route = db.query(RailRoute).filter(
-            (RailRoute.name == route.name) | (RailRoute.name == base_name)
-        ).first()
-
+        rail_route = rail_route_map.get(rng.rail_route_id)
         if not rail_route:
             continue
 
@@ -472,8 +470,8 @@ def get_org_boundaries(
             "properties": {
                 "organization_id":   org_id,
                 "organization_name": org.name,
-                "route_code":        route.code,
-                "route_name":        route.name,
+                "route_code":        rail_route.korail_route_code,
+                "route_name":        rail_route.name,
                 "field":             rng.field,
                 "start_km":          rng.start_km,
                 "end_km":            rng.end_km,

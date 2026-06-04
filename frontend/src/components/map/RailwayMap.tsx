@@ -41,8 +41,8 @@ interface Props {
   hiddenLineTypes?: Set<'고속선' | '일반선'>;
   /** 시설물 분류 필터 — null이면 시설물 미표시 */
   facilityFilter?: FacilityFilter | null;
-  /** 특정 노선 코드로 시설물 필터링 (null=전체) */
-  filterRouteCode?: string | null;
+  /** 특정 노선 이름으로 시설물 필터링 (null=전체, Set=복수 선택, string=단일) */
+  filterRouteCode?: Set<string> | string | null;
   /** 위험지구(2m)/보호지구(30m) 시각화 ON/OFF */
   showDangerZone?: boolean;
   /** 차단명령 구간 오버레이 데이터 */
@@ -577,6 +577,8 @@ function blockLineStyle(blockType: string, workType?: string | null): {
   opacity: number;
   widthScale: number;
 } {
+  void workType;
+
   // 선로차단 계열: 작업형태 구분 없이 통일 두께 (BLOCK_STROKE_SVG = 노선의 2배)
   // work_type은 향후 장비 투입 표시 구분에 활용 예정
   if (blockType === '선로차단') {
@@ -705,7 +707,7 @@ function _renderSigungu(
     .data(features)
     .join('path')
     .attr('class', 'sigungu')
-    .attr('d', (d) => pathGen(d as any) ?? '')
+    .attr('d', (d) => pathGen(d as d3.GeoPermissibleObjects) ?? '')
     .attr('fill', (d) =>
       d.properties.admin_level === 1
         ? (SIDO_FILLS[d.properties.sig_cd] ?? 'rgba(200,210,220,0.15)')
@@ -803,7 +805,7 @@ export default function RailwayMap({
   const sigunguDataRef    = useRef<SigungCollection | null>(null);
   // stale-closure 방지 refs — zoom handler에서 최신 상태에 접근
   const facilityFilterRef   = useRef<FacilityFilter | null>(null);
-  const filterRouteCodeRef  = useRef<string | null>(null);
+  const filterRouteCodeRef  = useRef<Set<string> | string | null>(null);
   // 줌 변경 시 block-segment 오프셋 재계산에 사용
   const blockSegmentsRef    = useRef<typeof blockSegments>(null);
   const lanedSegmentsRef    = useRef<LanedSegment[]>([]);
@@ -975,7 +977,7 @@ export default function RailwayMap({
           // trackIndex+trackCount 저장 방식: 줌 변경 시 trackHalfGapPx(k) 재계산으로
           // 오프셋을 갱신할 수 있어 간격이 줌에 따라 동적으로 변한다.
           interface TrackPath {
-            routeId: number; routeCode: string; lineType: string;
+            routeId: number; routeCode: string; routeName: string; lineType: string;
             hasCatenary: boolean;
             trackIndex: number;   // trackOffsetsPx 배열 내 인덱스
             trackCount: number;   // 해당 구간의 선로 수
@@ -987,8 +989,9 @@ export default function RailwayMap({
             const routeLayer = g.select<SVGGElement>('.routes-computed');
             const paths: TrackPath[] = [];
             const hiddenSet = hiddenLineTypesRef.current;
+            const frcNow = filterRouteCodeRef.current;
             for (const feat of allRailGeoRef.current.features) {
-              const { rail_route_id, korail_route_code, line_type,
+              const { rail_route_id, korail_route_code, route_name, line_type,
                       default_track_count, default_has_catenary, track_sections } = feat.properties;
               const coords = feat.geometry.coordinates;
               const hidden = hiddenSet.has(line_type as '고속선' | '일반선');
@@ -997,7 +1000,7 @@ export default function RailwayMap({
                 // (zoom<1.5에서도 부분 비전철 구간이 회색으로 보이도록)
                 const segs = splitByTrackSections(coords, default_track_count, default_has_catenary, track_sections);
                 for (const seg of segs) {
-                  paths.push({ routeId: rail_route_id, routeCode: korail_route_code,
+                  paths.push({ routeId: rail_route_id, routeCode: korail_route_code, routeName: route_name,
                                lineType: line_type, hasCatenary: seg.has_catenary,
                                trackIndex: 0, trackCount: 1, coords: seg.coords, hidden });
                 }
@@ -1006,7 +1009,7 @@ export default function RailwayMap({
                 for (const seg of segments) {
                   const n = [1,2,4,6].includes(seg.track_count) ? seg.track_count : 2;
                   for (let i = 0; i < n; i++) {
-                    paths.push({ routeId: rail_route_id, routeCode: korail_route_code,
+                    paths.push({ routeId: rail_route_id, routeCode: korail_route_code, routeName: route_name,
                                  lineType: line_type, hasCatenary: seg.has_catenary,
                                  trackIndex: i, trackCount: n, coords: seg.coords, hidden });
                   }
@@ -1026,7 +1029,12 @@ export default function RailwayMap({
               .attr('stroke', (d) => computedRouteStroke(d.lineType, d.hasCatenary, routeColorsRef.current))
               .attr('stroke-width', ROUTE_STROKE_SVG)
               // non-scaling-stroke 제거 — SVG 단위가 zoom과 함께 자연스럽게 스케일
-              .attr('display', (d) => d.hidden ? 'none' : null);
+              .attr('display', (d) => d.hidden ? 'none' : null)
+              .attr('opacity', (d) => {
+                if (!frcNow) return null;
+                const match = frcNow instanceof Set ? frcNow.has(d.routeName) : frcNow === d.routeName;
+                return match ? null : 0.15;
+              });
           }
           // 동일 모드 유지 시: SVG 단위 오프셋은 zoom 무관 → path 재계산 불필요
         }
@@ -1098,7 +1106,7 @@ export default function RailwayMap({
       d3.zoomIdentity.translate(W / 4, H / 4).scale(0.5),
     );
 
-  }, [allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allRailGeo]);
 
   // ── 줌에 따른 시설물 가시성 + 고정 크기 보정 ───────────────────────────
   function _updateFacilityVisibility(k: number) {
@@ -1107,6 +1115,19 @@ export default function RailwayMap({
     const proj = projRef.current;
     const ff   = facilityFilterRef.current;
     const frc  = filterRouteCodeRef.current;
+    // 노선 필터 매칭: 단일(string) 또는 복수(Set<string>) 모두 지원
+    const frcMatch = (routeName: string): boolean => {
+      if (frc == null) return true;
+      if (frc instanceof Set) return frc.has(routeName);
+      return frc === routeName;
+    };
+
+    // 노선 필터: 선택된 노선 강조, 나머지 흐리게 (노선명 기준)
+    g.selectAll<SVGPathElement, { routeName?: string }>('path.route-computed')
+      .attr('opacity', (d) => {
+        if (!frc || !d.routeName) return null;
+        return frcMatch(d.routeName) ? null : 0.15;
+      });
 
     // 시군구 경계 가시성
     g.selectAll<SVGPathElement, SigungFeature>('path.sigungu')
@@ -1132,10 +1153,10 @@ export default function RailwayMap({
 
     // Point 시설물: facilityFilter + routeCode 체크 후 줌 가시성 적용
     g.selectAll<SVGGElement, FacilityFeature>('g.facility-point-item').each(function(d) {
-      const { type, station_type, route_code } = d.properties;
+      const { type, station_type, route_name } = d.properties;
 
-      // 노선 필터
-      if (frc != null && route_code !== frc) {
+      // 노선 필터: route_name 비교 (route_code는 korail_route_code라 레거시 code와 불일치)
+      if (!frcMatch(route_name)) {
         d3.select(this).attr('display', 'none');
         return;
       }
@@ -1192,9 +1213,9 @@ export default function RailwayMap({
 
     // 구간 시설물 (터널·교량·과선교) hit area — 클릭 감지용 (투명, 넓게)
     g.selectAll<SVGPathElement, FacilityFeature>('path.facility-segment').each(function(d) {
-      const { type, station_type, route_code } = d.properties;
+      const { type, station_type, route_name } = d.properties;
 
-      if (frc != null && route_code !== frc) {
+      if (!frcMatch(route_name)) {
         d3.select(this).attr('display', 'none');
         return;
       }
@@ -1214,9 +1235,9 @@ export default function RailwayMap({
     // 터널·교량 심볼 — 줌 변경마다 buildTBSymbol()로 경로 재계산
     // (trackHalfGapPx가 줌에 따라 변하므로 심볼 크기가 선로 간격에 맞게 반응)
     g.selectAll<SVGPathElement, FacilityFeature>('path.tb-band').each(function(d) {
-      const { type, station_type, route_code } = d.properties;
+      const { type, station_type, route_name } = d.properties;
 
-      if (frc != null && route_code !== frc) { d3.select(this).attr('display', 'none'); return; }
+      if (!frcMatch(route_name)) { d3.select(this).attr('display', 'none'); return; }
 
       let typeOk = false;
       if (ff != null && type === '구조물') {
@@ -1247,8 +1268,8 @@ export default function RailwayMap({
     // (useEffect 실행 시 k가 초기값(~0.5)이라 SVG 단위가 크게 설정되어
     //  zoom 후 물리 픽셀이 과도하게 커지는 문제 방지)
     g.selectAll<SVGTextElement, FacilityFeature>('text.facility-seg-label').each(function(d) {
-      const { type, station_type, route_code } = d.properties;
-      if (frc != null && route_code !== frc) { d3.select(this).attr('display', 'none'); return; }
+      const { type, station_type, route_name } = d.properties;
+      if (!frcMatch(route_name)) { d3.select(this).attr('display', 'none'); return; }
       let typeOk = false;
       if (ff != null && type === '구조물') {
         if      (station_type === '터널')   typeOk = ff.구조물터널;
@@ -1309,8 +1330,8 @@ export default function RailwayMap({
     // 이 텍스트는 g.facility-point-item[scale(1/k)] 안에 있어 zoom이 상쇄됨
     // → font-size는 물리 픽셀 값 그대로 사용 (k로 나누면 2중 보정으로 더 작아짐)
     g.selectAll<SVGTextElement, FacilityFeature>('text.facility-point-label').each(function(d) {
-      const { type, station_type, route_code } = d.properties;
-      if (frc != null && route_code !== frc) { d3.select(this).attr('display', 'none'); return; }
+      const { type, station_type, route_name } = d.properties;
+      if (!frcMatch(route_name)) { d3.select(this).attr('display', 'none'); return; }
       let typeOk = false;
       if (ff != null) {
         if (type === '변전소') typeOk = ff.전기변전소 || ff.전기전기실 || ff.전기통신실 || ff.전기신호기계실;
@@ -1327,7 +1348,7 @@ export default function RailwayMap({
   // ── facilityFilter / filterRouteCode 변경 → 가시성 재계산 ───────────────
   useEffect(() => {
     _updateFacilityVisibility(scaleRef.current);
-  }, [facilityFilter, filterRouteCode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [facilityFilter, filterRouteCode]);
 
   // ── rail_computed_geometry 노선 렌더링 — 선로 수(track_count) 기반 복선 표현 ──
   useEffect(() => {
@@ -1348,6 +1369,7 @@ export default function RailwayMap({
     interface TrackPath {
       routeId: number;
       routeCode: string;
+      routeName: string;
       lineType: string;
       hasCatenary: boolean;
       trackIndex: number;   // trackOffsetsPx 배열 내 인덱스
@@ -1357,9 +1379,10 @@ export default function RailwayMap({
     }
 
     const paths: TrackPath[] = [];
+    const frcNow = filterRouteCodeRef.current;
 
     for (const feat of allRailGeo.features) {
-      const { rail_route_id, korail_route_code, line_type,
+      const { rail_route_id, korail_route_code, route_name, line_type,
               default_track_count, default_has_catenary, track_sections } = feat.properties;
       const coords = feat.geometry.coordinates;
       const hidden = hiddenLineTypes.has(line_type as '고속선' | '일반선');
@@ -1368,7 +1391,7 @@ export default function RailwayMap({
         // 전국 조망: 단선이지만 구간별 전철화 색상은 반영
         const segs = splitByTrackSections(coords, default_track_count, default_has_catenary, track_sections);
         for (const seg of segs) {
-          paths.push({ routeId: rail_route_id, routeCode: korail_route_code,
+          paths.push({ routeId: rail_route_id, routeCode: korail_route_code, routeName: route_name,
                        lineType: line_type, hasCatenary: seg.has_catenary,
                        trackIndex: 0, trackCount: 1, coords: seg.coords, hidden });
         }
@@ -1377,7 +1400,7 @@ export default function RailwayMap({
         for (const seg of segments) {
           const n = [1,2,4,6].includes(seg.track_count) ? seg.track_count : 2;
           for (let i = 0; i < n; i++) {
-            paths.push({ routeId: rail_route_id, routeCode: korail_route_code,
+            paths.push({ routeId: rail_route_id, routeCode: korail_route_code, routeName: route_name,
                          lineType: line_type, hasCatenary: seg.has_catenary,
                          trackIndex: i, trackCount: n, coords: seg.coords, hidden });
           }
@@ -1397,8 +1420,13 @@ export default function RailwayMap({
       .attr('fill', 'none')
       .attr('stroke', (d) => computedRouteStroke(d.lineType, d.hasCatenary, routeColorsRef.current))
       .attr('stroke-width', ROUTE_STROKE_SVG)
-      .attr('display', (d) => d.hidden ? 'none' : null);
-  }, [allRailGeo, hiddenLineTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+      .attr('display', (d) => d.hidden ? 'none' : null)
+      .attr('opacity', (d) => {
+        if (!frcNow) return null;
+        const match = frcNow instanceof Set ? frcNow.has(d.routeName) : frcNow === d.routeName;
+        return match ? null : 0.15;
+      });
+  }, [allRailGeo, hiddenLineTypes]);
 
   // ── 시군구 배경 레이어 ─────────────────────────────────────────────────
   useEffect(() => {
@@ -1414,7 +1442,7 @@ export default function RailwayMap({
     const pathGen = d3.geoPath().projection(projRef.current);
     _renderSigungu(bgLayer, labelLayer, sigunguData.features, pathGen, projRef.current);
     _updateFacilityVisibility(scaleRef.current);
-  }, [sigunguData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sigunguData]);
 
   // ── 조직 viewport 적용 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -1434,7 +1462,7 @@ export default function RailwayMap({
       zoomRef.current.transform,
       d3.zoomIdentity.translate(W / 2 - k * center[0], H / 2 - k * center[1]).scale(k),
     );
-  }, [allRailGeo, orgViewport]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allRailGeo, orgViewport]);
 
   // ── 조직 관할 경계 업데이트 ─────────────────────────────────────────────
   useEffect(() => {
@@ -1452,7 +1480,7 @@ export default function RailwayMap({
       .data(orgBoundary.features)
       .join('path')
       .attr('class', 'org-boundary')
-      .attr('d', (d) => pathGen(d as any) ?? '')
+      .attr('d', (d) => pathGen(d as d3.GeoPermissibleObjects) ?? '')
       .attr('fill', 'none')
       .attr('stroke', (d) => FIELD_COLORS[d.properties.field] ?? '#2563eb')
       .attr('stroke-width', capStrokeSvg(ORG_BOUNDARY_SVG, k, capK))
@@ -1463,7 +1491,7 @@ export default function RailwayMap({
         const p = d.properties;
         return `${p.organization_name} — ${p.route_name}\n${p.field} | ${p.start_km}~${p.end_km}km`;
       });
-  }, [showOrgBoundary, orgBoundary]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showOrgBoundary, orgBoundary]);
 
   // ── 위험지구/보호지구 레이어 (block-segments 아래) ──────────────────────
   useEffect(() => {
@@ -1992,7 +2020,7 @@ export default function RailwayMap({
       .data(segFeatures)
       .join('path')
       .attr('class', 'facility-segment')
-      .attr('d', (d) => pathGen(d as any) ?? '')
+      .attr('d', (d) => pathGen(d as d3.GeoPermissibleObjects) ?? '')
       .attr('fill', 'none')
       .attr('stroke', (d) => isTB(d) ? 'transparent' : facilityColor(d.properties.type, d.properties.station_type, facilityColorsRef.current))
       .attr('stroke-width', (d) => isTB(d) ? capStrokeSvg(PROTECT_ZONE_SVG, k, capK) : capStrokeSvg(DANGER_ZONE_SVG / 2, k, capK))
@@ -2242,7 +2270,7 @@ export default function RailwayMap({
           .translate(W / 2 - targetK * mid[0], H / 2 - targetK * mid[1])
           .scale(targetK),
       );
-  }, [selectedBlockId, blockSegments]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedBlockId, blockSegments]);
 
   // ── 줌 컨트롤 핸들러 ─────────────────────────────────────────────────────
   function handleZoomIn() {

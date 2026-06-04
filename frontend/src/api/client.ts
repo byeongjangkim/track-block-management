@@ -1,9 +1,14 @@
 import axios from 'axios';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_ORIGIN = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+
+export function apiUrl(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${API_ORIGIN}${normalized}`;
+}
 
 export const api = axios.create({
-  baseURL: `${BASE_URL}/api/v1`,
+  baseURL: apiUrl('/api/v1'),
 });
 
 // 요청마다 Authorization 헤더 자동 추가

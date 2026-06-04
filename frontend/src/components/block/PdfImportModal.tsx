@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { bulkParsePdfs, bulkCreateBlockOrders } from '../../api/blockOrders';
-import type { ParsedRow, BulkBlockOrderItem } from '../../types';
+import type { ParsedRow, BulkBlockOrderItem, TrackName } from '../../types';
 
 interface Props {
   routes: { id: number; name: string }[];
@@ -11,6 +11,11 @@ interface Props {
 }
 
 const FIELDS = ['시설', '전기', '건축'] as const;
+const TRACK_OPTIONS: TrackName[] = ['상선', '하선', '상1', '상2', '상3', '하1', '하2', '하3'];
+
+function isTrackName(value: string): value is TrackName {
+  return TRACK_OPTIONS.includes(value as TrackName);
+}
 
 // 편집 가능한 행 상태
 interface EditableRow extends ParsedRow {
@@ -141,7 +146,7 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
       const items: BulkBlockOrderItem[] = selected.map((r) => ({
         route_id: r.route_id as number,
         organization_id: defaultOrgId,
-        tracks: (r.tracks ?? ['상선']) as import('../../types').TrackName[],
+        tracks: r.tracks?.length ? r.tracks : ['상선'],
         start_km: r.start_km ?? null,
         end_km: r.end_km ?? null,
         section_note: r.section_note ?? null,
@@ -149,7 +154,7 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
         start_time: r.start_time as string,
         end_time: r.end_time as string,
         field: r.field,
-        block_type: r.block_type ?? '선로일시사용중지',
+        block_type: r.block_type ?? '선로차단',
         has_equipment: r.has_equipment ?? false,
         has_labor: r.has_labor ?? true,
         is_external: false,
@@ -367,16 +372,16 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                             <div className="relative">
                               <select
                                 value={row.tracks?.[0] ?? ''}
-                                onChange={(e) => updateRow(row._id, { tracks: e.target.value ? [e.target.value] : null })}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  updateRow(row._id, { tracks: isTrackName(value) ? [value] : null });
+                                }}
                                 className="w-16 h-7 border-0 bg-transparent text-xs focus:outline-none appearance-none cursor-pointer pr-4"
                               >
                                 <option value="">-</option>
-                                <option value="상선">상선</option>
-                                <option value="하선">하선</option>
-                                <option value="상1">상1</option>
-                                <option value="상2">상2</option>
-                                <option value="하1">하1</option>
-                                <option value="하2">하2</option>
+                                {TRACK_OPTIONS.map((track) => (
+                                  <option key={track} value={track}>{track}</option>
+                                ))}
                               </select>
                               <span className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-gray-400 text-xs">▾</span>
                             </div>

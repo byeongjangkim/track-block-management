@@ -516,11 +516,25 @@ export default function RouteMasterPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 flex-1 overflow-hidden">
         <div className="border rounded-lg overflow-auto">
-          <table className="w-full text-sm border-collapse">
+          <table className="w-full text-sm border-collapse table-fixed">
+            <colgroup>
+              <col className="w-12" />       {/* ID */}
+              <col className="w-14" />       {/* 노선코드 */}
+              <col className="w-36" />       {/* 노선명 */}
+              <col className="w-12" />       {/* 구분 */}
+              <col className="w-24" />       {/* 시점역 */}
+              <col className="w-24" />       {/* 종점역 */}
+              <col className="w-28" />       {/* KP 범위 */}
+              <col className="w-20" />       {/* 연장 */}
+              <col className="w-12" />       {/* 역/KP */}
+              <col className="w-12" />       {/* 기준선 */}
+              <col className="w-14" />       {/* 렌더링 */}
+              <col className="w-14" />       {/* 상태 */}
+            </colgroup>
             <thead className="bg-gray-50 sticky top-0">
               <tr>
                 {['ID', '노선코드', '노선명', '구분', '시점역', '종점역', 'KP 범위', '연장', '역/KP', '기준선', '렌더링', '상태'].map((header) => (
-                  <th key={header} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 border-b whitespace-nowrap">
+                  <th key={header} className="px-2 py-2.5 text-left text-xs font-medium text-gray-500 border-b truncate">
                     {header}
                   </th>
                 ))}
@@ -550,20 +564,20 @@ export default function RouteMasterPage() {
                     onClick={() => setSelectedRouteId(route.id)}
                     className={`border-b cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : 'hover:bg-blue-50'}`}
                   >
-                    <td className="px-3 py-2.5 tabular-nums text-gray-500">{route.id}</td>
-                    <td className="px-3 py-2.5 font-medium text-gray-700 whitespace-nowrap">{route.korail_route_code}</td>
-                    <td className="px-3 py-2.5 font-semibold text-gray-800 whitespace-nowrap">{route.name}</td>
-                    <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">{route.route_category ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">{route.start_station_name ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-gray-600 whitespace-nowrap">{route.end_station_name ?? '—'}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-gray-600 whitespace-nowrap">
+                    <td className="px-2 py-2.5 tabular-nums text-gray-500 truncate">{route.id}</td>
+                    <td className="px-2 py-2.5 font-mono text-xs text-gray-700 truncate">{route.korail_route_code}</td>
+                    <td className="px-2 py-2.5 font-semibold text-gray-800 truncate" title={route.name}>{route.name}</td>
+                    <td className="px-2 py-2.5 text-gray-500 truncate">{route.route_category ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-gray-600 truncate" title={route.start_station_name ?? ''}>{route.start_station_name ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-gray-600 truncate" title={route.end_station_name ?? ''}>{route.end_station_name ?? '—'}</td>
+                    <td className="px-2 py-2.5 tabular-nums text-gray-600 text-xs truncate">
                       {formatKp(route.start_kp)} ~ {formatKp(route.end_kp)}
                     </td>
-                    <td className="px-3 py-2.5 tabular-nums text-gray-500 whitespace-nowrap">{formatLength(route.length_kp)}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-gray-600">{route.station_point_count.toLocaleString()}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-gray-600">{route.baseline_point_count.toLocaleString()}</td>
-                    <td className="px-3 py-2.5">
-                      <span className={`px-2 py-0.5 rounded-full text-xs ${status.cls}`}>
+                    <td className="px-2 py-2.5 tabular-nums text-gray-500 text-xs truncate">{formatLength(route.length_kp)}</td>
+                    <td className="px-2 py-2.5 tabular-nums text-center text-gray-600">{route.station_point_count.toLocaleString()}</td>
+                    <td className="px-2 py-2.5 tabular-nums text-center text-gray-600">{route.baseline_point_count.toLocaleString()}</td>
+                    <td className="px-2 py-2.5">
+                      <span className={`px-1.5 py-0.5 rounded-full text-xs ${status.cls}`}>
                         {status.label}
                       </span>
                     </td>

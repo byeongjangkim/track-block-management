@@ -90,6 +90,25 @@ class BlockOrder(Base):
     # 위험등급: 'A'(위험) / 'B'(주의) / 'C'(일반) / NULL(미지정)
     danger_level: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
+    # 대표명령 계층 — NULL=대표명령, NOT NULL=하위작업
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)   # FK block_orders.id
+    # 투입장비 (작업차량)
+    equipment_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 열차서행
+    speed_restriction: Mapped[int | None] = mapped_column(Integer, nullable=True)       # km/h
+    speed_restriction_note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # 전차선 보호장치 — '양단접지' | '단접지' | None
+    catenary_protection: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 관제사 보호조치 (고속선 전용)
+    zep:  Mapped[str | None] = mapped_column(String(30), nullable=True)  # ZEP 코드
+    zcp:  Mapped[str | None] = mapped_column(String(30), nullable=True)  # ZCP 코드
+    # 작업자 보호조치 (고속선 전용)
+    cpt:  Mapped[str | None] = mapped_column(String(30), nullable=True)  # CPT 코드
+    tzep: Mapped[str | None] = mapped_column(String(30), nullable=True)  # TZEP 코드
+    # 작업자 수
+    worker_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # 메타
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)

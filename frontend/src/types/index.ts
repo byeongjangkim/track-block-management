@@ -1,5 +1,10 @@
-// 선로 이름 — 복선: 상선/하선, 2복선: 상1~하2, 3복선: 상1~하3
-export type TrackName = '상선' | '하선' | '상1' | '상2' | '상3' | '하1' | '하2' | '하3';
+// 선로 이름
+// 일반선: 상선/하선(단선·복선), 상1~상3·하1~하3(2복선·3복선)
+// 고속선: T1(하1)·T3(하2)·T5(하3)·T7(하4) / T2(상1)·T4(상2)·T6(상3)·T8(상4)
+export type TrackName =
+  | '상선' | '하선'
+  | '상1' | '상2' | '상3' | '하1' | '하2' | '하3'
+  | 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6' | 'T7' | 'T8';
 
 /** 선로 수에 따른 선택 가능한 선로 목록 */
 export function availableTracks(trackCount: number): TrackName[] {
@@ -9,6 +14,17 @@ export function availableTracks(trackCount: number): TrackName[] {
   if (trackCount === 6) return ['상1', '상2', '상3', '하1', '하2', '하3'];
   return ['상선', '하선'];
 }
+
+/** 고속선 선로 번호 — 중심에서 외측 순 */
+export const HIGH_SPEED_DOWN_TRACKS: TrackName[] = ['T1', 'T3', 'T5', 'T7']; // 하1~하4
+export const HIGH_SPEED_UP_TRACKS: TrackName[]   = ['T2', 'T4', 'T6', 'T8']; // 상1~상4
+export const HIGH_SPEED_TRACKS: TrackName[] = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8'];
+
+/** 고속선 T번호 ↔ 일반선 명칭 대응 */
+export const T_TRACK_LABEL: Record<string, string> = {
+  T1: 'T1(하1)', T2: 'T2(상1)', T3: 'T3(하2)', T4: 'T4(상2)',
+  T5: 'T5(하3)', T6: 'T6(상3)', T7: 'T7(하4)', T8: 'T8(상4)',
+};
 
 // 차단현황도 시설물 분류 필터
 // 역: station_type별 세분화 / 구조물·전기설비: 세부 시설물 유형별
@@ -68,6 +84,7 @@ export interface BlockOrder {
   organization_id: number | null;
   route_id: number;
   rail_route_id: number | null;
+  route_name: string | null;
   tracks: TrackName[];
   start_km: number | null;
   end_km: number | null;
@@ -79,6 +96,16 @@ export interface BlockOrder {
   start_rail_facility_id: number | null;
   end_rail_facility_id: number | null;
   danger_level: string | null;   // 'A'(위험) / 'B'(주의) / 'C'(일반) / null
+  parent_id: number | null;      // 대표명령 ID (null = 대표명령 자신)
+  equipment_name: string | null; // 투입장비
+  speed_restriction: number | null;      // 열차서행 제한속도 km/h
+  speed_restriction_note: string | null; // 열차서행 구간/비고
+  catenary_protection: string | null;  // 양단접지 | 단접지
+  zep:  string | null;   // 관제사 보호조치 ZEP (고속선)
+  zcp:  string | null;   // 관제사 보호조치 ZCP (고속선)
+  cpt:  string | null;   // 작업자 보호조치 CPT (고속선)
+  tzep: string | null;   // 작업자 보호조치 TZEP (고속선)
+  worker_count: number | null;   // 작업자 수
   work_date: string;      // YYYY-MM-DD
   start_time: string;     // HH:mm:ss
   end_time: string;
@@ -124,6 +151,16 @@ export interface BlockOrderCreate {
   start_rail_facility_id?: number | null;
   end_rail_facility_id?: number | null;
   danger_level?: string | null;
+  parent_id?: number | null;
+  equipment_name?: string | null;
+  speed_restriction?: number | null;
+  speed_restriction_note?: string | null;
+  catenary_protection?: string | null;
+  zep?:  string | null;
+  zcp?:  string | null;
+  cpt?:  string | null;
+  tzep?: string | null;
+  worker_count?: number | null;
   work_date: string;
   start_time: string;
   end_time: string;

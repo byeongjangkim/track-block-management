@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AxiosError } from 'axios';
 import {
@@ -9,7 +9,7 @@ import {
   deleteRouteRange,
   type RouteRange,
 } from '../api/organizations';
-import { fetchRoutes } from '../api/routes';
+import { fetchReferenceRoutes, type RailReferenceRoute } from '../api/railReference';
 
 const ALL_FIELDS = ['all', '시설', '전기', '건축'] as const;
 const FIELD_LABEL: Record<string, string> = {
@@ -20,23 +20,108 @@ const FIELD_LABEL: Record<string, string> = {
 };
 
 interface EditRow {
-  route_id: number | '';
+  rail_route_id: number | '';
   field: string;
   start_km: number | '';
   end_km: number | '';
 }
 
-const EMPTY_ROW: EditRow = { route_id: '', field: 'all', start_km: '', end_km: '' };
+const EMPTY_ROW: EditRow = { rail_route_id: '', field: 'all', start_km: '', end_km: '' };
 
 const INPUT_CLS =
   'h-8 border rounded px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 w-full';
 const SELECT_CLS =
   'h-8 border rounded px-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400 w-full bg-white';
 
+// ── 검색형 노선 셀렉터 ────────────────────────────────────────────────────────
+
+interface RouteSearchSelectProps {
+  value: number | '';
+  routes: RailReferenceRoute[];
+  onChange: (id: number | '') => void;
+}
+
+function RouteSearchSelect({ value, routes, onChange }: RouteSearchSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  const sorted = [...routes].sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  const filtered = query.trim()
+    ? sorted.filter(r =>
+        r.name.includes(query.trim()) ||
+        (r.korail_route_code ?? '').toLowerCase().includes(query.trim().toLowerCase())
+      )
+    : sorted;
+
+  const selected = routes.find(r => r.id === value);
+
+  function handleSelect(r: RailReferenceRoute) {
+    onChange(r.id);
+    setOpen(false);
+    setQuery('');
+  }
+
+  function handleBlur(e: React.FocusEvent<HTMLDivElement>) {
+    if (!ref.current?.contains(e.relatedTarget as Node)) {
+      setOpen(false);
+      setQuery('');
+    }
+  }
+
+  return (
+    <div ref={ref} className="relative" onBlur={handleBlur}>
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={`${INPUT_CLS} text-left flex items-center justify-between pr-2`}
+      >
+        <span className={selected ? 'text-gray-800' : 'text-gray-400'}>
+          {selected ? selected.name : '노선 선택'}
+        </span>
+        <span className="text-gray-400 text-xs ml-1">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full left-0 w-64 bg-white border rounded shadow-lg mt-0.5">
+          <div className="p-1.5 border-b">
+            <input
+              autoFocus
+              type="text"
+              placeholder="노선명 또는 코드 검색..."
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              className="w-full px-2 py-1 text-sm border rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          </div>
+          <div className="overflow-auto max-h-52">
+            {filtered.length === 0 && (
+              <div className="px-3 py-2 text-xs text-gray-400">검색 결과 없음</div>
+            )}
+            {filtered.map(r => (
+              <button
+                key={r.id}
+                type="button"
+                onMouseDown={() => handleSelect(r)}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 flex items-center justify-between ${
+                  r.id === value ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-800'
+                }`}
+              >
+                <span>{r.name}</span>
+                <span className="text-xs text-gray-400 font-mono ml-2">{r.korail_route_code}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 메인 컴포넌트 ─────────────────────────────────────────────────────────────
+
 export default function OrgRangesAdminPage() {
   const qc = useQueryClient();
 
-  // 2단계 UI: null = 조직 목록, number = 구간 편집
   const [selectedOrgId, setSelectedOrgId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | 'new' | null>(null);
   const [editRow, setEditRow] = useState<EditRow>(EMPTY_ROW);
@@ -52,12 +137,12 @@ export default function OrgRangesAdminPage() {
     queryFn: fetchOrganizations,
   });
 
-  const { data: routes = [] } = useQuery({
-    queryKey: ['routes'],
-    queryFn: fetchRoutes,
+  const { data: railRoutes = [] } = useQuery({
+    queryKey: ['reference-routes'],
+    queryFn: fetchReferenceRoutes,
+    staleTime: 60_000,
   });
 
-  // 전체 조직별 구간 수 집계용 (목록 화면)
   const allRangeQueries = useQuery({
     queryKey: ['route-ranges-all'],
     queryFn: async () => {
@@ -76,8 +161,6 @@ export default function OrgRangesAdminPage() {
     enabled: selectedOrgId !== null,
   });
 
-  const routeMap = Object.fromEntries(routes.map((r) => [r.id, r]));
-
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['route-ranges', selectedOrgId] });
     qc.invalidateQueries({ queryKey: ['route-ranges-all'] });
@@ -86,7 +169,7 @@ export default function OrgRangesAdminPage() {
   const createMut = useMutation({
     mutationFn: (row: EditRow) =>
       createRouteRange(selectedOrgId!, {
-        route_id: row.route_id as number,
+        rail_route_id: row.rail_route_id as number,
         field: row.field,
         start_km: row.start_km as number,
         end_km: row.end_km as number,
@@ -105,7 +188,7 @@ export default function OrgRangesAdminPage() {
   const updateMut = useMutation({
     mutationFn: ({ id, row }: { id: number; row: EditRow }) =>
       updateRouteRange(selectedOrgId!, id, {
-        route_id: row.route_id as number,
+        rail_route_id: row.rail_route_id as number,
         field: row.field,
         start_km: row.start_km as number,
         end_km: row.end_km as number,
@@ -137,7 +220,7 @@ export default function OrgRangesAdminPage() {
 
   function startEdit(r: RouteRange) {
     setEditingId(r.id);
-    setEditRow({ route_id: r.route_id, field: r.field, start_km: r.start_km, end_km: r.end_km });
+    setEditRow({ rail_route_id: r.rail_route_id, field: r.field, start_km: r.start_km, end_km: r.end_km });
   }
 
   function cancelEdit() {
@@ -146,7 +229,7 @@ export default function OrgRangesAdminPage() {
   }
 
   function saveEdit() {
-    if (editRow.route_id === '') { showNotice('err', '노선을 선택하세요.'); return; }
+    if (editRow.rail_route_id === '') { showNotice('err', '노선을 선택하세요.'); return; }
     if (editRow.start_km === '' || editRow.end_km === '') { showNotice('err', 'km 값을 입력하세요.'); return; }
     if ((editRow.start_km as number) >= (editRow.end_km as number)) {
       showNotice('err', '시작 km은 종료 km보다 작아야 합니다.'); return;
@@ -156,8 +239,7 @@ export default function OrgRangesAdminPage() {
   }
 
   function handleDelete(r: RouteRange) {
-    const route = routeMap[r.route_id];
-    if (!confirm(`삭제하시겠습니까?\n${route?.name ?? ''} / ${FIELD_LABEL[r.field] ?? r.field} (${r.start_km} ~ ${r.end_km} km)`)) return;
+    if (!confirm(`삭제하시겠습니까?\n${r.route_name} / ${FIELD_LABEL[r.field] ?? r.field} (${r.start_km} ~ ${r.end_km} km)`)) return;
     deleteMut.mutate(r.id);
   }
 
@@ -263,7 +345,7 @@ export default function OrgRangesAdminPage() {
           <tbody>
             {editingId === 'new' && (
               <tr className="border-b bg-blue-50">
-                <EditCells row={editRow} routes={routes} setField={setField} />
+                <EditCells row={editRow} railRoutes={railRoutes} setField={setField} />
                 <td className="px-3 py-1.5 whitespace-nowrap">
                   <SaveCancelButtons onSave={saveEdit} onCancel={cancelEdit} />
                 </td>
@@ -279,7 +361,7 @@ export default function OrgRangesAdminPage() {
               ranges.map((r) =>
                 editingId === r.id ? (
                   <tr key={r.id} className="border-b bg-blue-50">
-                    <EditCells row={editRow} routes={routes} setField={setField} />
+                    <EditCells row={editRow} railRoutes={railRoutes} setField={setField} />
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       <SaveCancelButtons onSave={saveEdit} onCancel={cancelEdit} />
                     </td>
@@ -307,22 +389,23 @@ export default function OrgRangesAdminPage() {
   );
 }
 
-// ── 유틸 컴포넌트 ─────────────────────────────────────────────────────────
+// ── 유틸 컴포넌트 ─────────────────────────────────────────────────────────────
 
 interface EditCellsProps {
   row: EditRow;
-  routes: { id: number; name: string }[];
+  railRoutes: RailReferenceRoute[];
   setField: <K extends keyof EditRow>(key: K, value: EditRow[K]) => void;
 }
 
-function EditCells({ row, routes, setField }: EditCellsProps) {
+function EditCells({ row, railRoutes, setField }: EditCellsProps) {
   return (
     <>
-      <td className="px-3 py-1.5">
-        <select value={row.route_id} onChange={(e) => setField('route_id', e.target.value === '' ? '' : Number(e.target.value))} className={SELECT_CLS}>
-          <option value="">노선 선택</option>
-          {routes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-        </select>
+      <td className="px-3 py-1.5" style={{ minWidth: '160px' }}>
+        <RouteSearchSelect
+          value={row.rail_route_id}
+          routes={railRoutes}
+          onChange={(id) => setField('rail_route_id', id)}
+        />
       </td>
       <td className="px-3 py-1.5">
         <select value={row.field} onChange={(e) => setField('field', e.target.value)} className={SELECT_CLS}>

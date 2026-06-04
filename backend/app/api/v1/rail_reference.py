@@ -801,6 +801,85 @@ def list_route_station_points(
     return items
 
 
+class StationPointUpdate(BaseModel):
+    center_kp: float | None = None
+    yard_start_kp: float | None = None
+    yard_end_kp: float | None = None
+    is_baseline_anchor: bool | None = None
+    lat: float | None = None
+    lon: float | None = None
+    station_role: str | None = None
+    station_type: str | None = None
+
+
+@router.patch("/station-points/{point_id}")
+def update_station_point(
+    point_id: int,
+    body: StationPointUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """역 포인트 KP·GPS·역 구분 업데이트 (org_admin 이상)"""
+    row = db.execute(
+        text("SELECT rsp.id, rsp.station_id, rsp.rail_route_id FROM rail_route_station_points rsp WHERE rsp.id = :id"),
+        {"id": point_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="역 포인트를 찾을 수 없습니다")
+
+    updates: dict = {}
+    if body.center_kp is not None:
+        updates["center_kp"] = body.center_kp
+    if body.yard_start_kp is not None:
+        updates["yard_start_kp"] = body.yard_start_kp
+    if body.yard_end_kp is not None:
+        updates["yard_end_kp"] = body.yard_end_kp
+    if body.is_baseline_anchor is not None:
+        updates["is_baseline_anchor"] = int(body.is_baseline_anchor)
+
+    if updates:
+        set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+        db.execute(
+            text(f"UPDATE rail_route_station_points SET {set_clause} WHERE id = :id"),
+            {**updates, "id": point_id},
+        )
+
+    station_updates: dict = {}
+    if body.lat is not None:
+        station_updates["lat"] = body.lat
+    if body.lon is not None:
+        station_updates["lon"] = body.lon
+    if body.station_role is not None:
+        station_updates["station_role"] = body.station_role
+    if body.station_type is not None:
+        station_updates["station_type"] = body.station_type
+
+    if station_updates:
+        set_clause = ", ".join(f"{k} = :{k}" for k in station_updates)
+        db.execute(
+            text(f"UPDATE rail_stations SET {set_clause} WHERE id = :station_id"),
+            {**station_updates, "station_id": row["station_id"]},
+        )
+
+    db.commit()
+
+    updated = db.execute(
+        text("""
+            SELECT rsp.id, rsp.route_sequence_no, rsp.center_kp, rsp.yard_start_kp,
+                   rsp.yard_end_kp, rsp.regional_org, rsp.is_baseline_anchor, rsp.match_note,
+                   s.station_code, s.name AS station_name, s.lat, s.lon,
+                   s.station_role, s.station_type
+            FROM rail_route_station_points rsp
+            JOIN rail_stations s ON s.id = rsp.station_id
+            WHERE rsp.id = :id
+        """),
+        {"id": point_id},
+    ).mappings().first()
+    result = dict(updated)
+    result["is_baseline_anchor"] = bool(result["is_baseline_anchor"])
+    return result
+
+
 @router.get("/routes/{rail_route_id}/facilities")
 def list_rail_facilities(
     rail_route_id: int,

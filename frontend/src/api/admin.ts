@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, apiUrl } from './client';
 import type { FacilityResponse } from './adminTypes';
 
 export type { FacilityResponse };
@@ -56,8 +56,7 @@ export async function deployRoute(routeCode: string): Promise<{
 
 export async function downloadCsvTemplate(routeCode: string): Promise<void> {
   const token = localStorage.getItem('access_token');
-  const base = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
-  const res = await fetch(`${base}/api/v1/admin/routes/${routeCode}/csv-template`, {
+  const res = await fetch(apiUrl(`/api/v1/admin/routes/${routeCode}/csv-template`), {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) throw new Error('템플릿 다운로드 실패');
@@ -69,5 +68,4 @@ export async function downloadCsvTemplate(routeCode: string): Promise<void> {
   a.click();
   URL.revokeObjectURL(url);
 }
-
 

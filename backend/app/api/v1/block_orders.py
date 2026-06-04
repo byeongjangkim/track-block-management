@@ -280,6 +280,22 @@ def get_block_order(
     return _enrich_route_name(order, db)
 
 
+@router.get("/{order_id}/children", response_model=list[BlockOrderResponse])
+def get_block_order_children(
+    order_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """대표명령의 하위작업 목록 조회"""
+    children = (
+        db.query(BlockOrder)
+        .filter(BlockOrder.parent_id == order_id)
+        .order_by(BlockOrder.work_date, BlockOrder.start_time)
+        .all()
+    )
+    return [_enrich_route_name(c, db) for c in children]
+
+
 @router.put("/{order_id}", response_model=BlockOrderResponse)
 def update_block_order(
     order_id: int,

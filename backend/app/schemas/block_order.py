@@ -3,10 +3,17 @@ from datetime import date, time
 from pydantic import BaseModel, field_validator, model_validator
 
 # 선로 이름 유효 값
-VALID_TRACKS = {'상선', '하선', '상1', '상2', '상3', '하1', '하2', '하3'}
+# 일반선: 상선/하선(단선·복선), 상1~상3·하1~하3(2복선·3복선)
+# 고속선: T1(하1)·T3(하2)·T5(하3)·T7(하4) / T2(상1)·T4(상2)·T6(상3)·T8(상4)
+VALID_TRACKS = {
+    '상선', '하선',
+    '상1', '상2', '상3', '하1', '하2', '하3',
+    'T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8',
+}
 
 # 유효한 block_type 목록
 VALID_BLOCK_TYPES = {
+    '대표명령',       # 상위 작업 계획 (parent_id=NULL)
     '선로차단',       # 노선 위 직접 표시 (장비/인력/기계 모두)
     '전차선단전',     # 변전소간 전차선 단전 (녹색, 노선 위)
     '작업구간설정',   # 차단 없는 인력/기계 이격 표시 (최외방 +0.5×gap)
@@ -91,6 +98,19 @@ class BlockOrderCreate(BaseModel):
     safety_items: str | None = None
     track_name: str | None = None
     danger_level: str | None = None  # 'A'(위험) / 'B'(주의) / 'C'(일반) / None
+    # 대표명령 계층
+    parent_id: int | None = None
+    # 투입장비 및 열차서행
+    equipment_name: str | None = None
+    speed_restriction: int | None = None        # km/h
+    speed_restriction_note: str | None = None
+    # 전차선 보호장치 및 보호조치
+    catenary_protection: str | None = None  # 양단접지 | 단접지
+    zep:  str | None = None   # 관제사 보호조치 ZEP (고속선)
+    zcp:  str | None = None   # 관제사 보호조치 ZCP (고속선)
+    cpt:  str | None = None   # 작업자 보호조치 CPT (고속선)
+    tzep: str | None = None   # 작업자 보호조치 TZEP (고속선)
+    worker_count: int | None = None  # 작업자 수
     note: str | None = None
 
 
@@ -133,6 +153,16 @@ class BlockOrderUpdate(BaseModel):
     safety_items: str | None = None
     track_name: str | None = None
     danger_level: str | None = None
+    parent_id: int | None = None
+    equipment_name: str | None = None
+    speed_restriction: int | None = None
+    speed_restriction_note: str | None = None
+    catenary_protection: str | None = None
+    zep:  str | None = None
+    zcp:  str | None = None
+    cpt:  str | None = None
+    tzep: str | None = None
+    worker_count: int | None = None
     note: str | None = None
 
     @field_validator("tracks")
@@ -190,6 +220,16 @@ class BlockOrderResponse(BaseModel):
     safety_items: str | None
     track_name: str | None
     danger_level: str | None
+    parent_id: int | None
+    equipment_name: str | None
+    speed_restriction: int | None
+    speed_restriction_note: str | None
+    catenary_protection: str | None
+    zep:  str | None
+    zcp:  str | None
+    cpt:  str | None
+    tzep: str | None
+    worker_count: int | None
     document_path: str | None
     note: str | None
     created_by: int

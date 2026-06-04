@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { AxiosError } from 'axios';
 import {
   fetchRouteSummaries,
   fetchRouteStationPoints,
+  updateStationPoint,
   type RouteListSummary,
   type RailRouteStationPoint,
 } from '../api/railReference';
@@ -57,6 +59,38 @@ function validationBadge(v: ValidationResult) {
   return 'bg-red-100 text-red-700';
 }
 
+// ── 편집 폼 ──────────────────────────────────────────────────────────────────
+
+const STATION_ROLES = ['관리역', '소속역', ''] as const;
+const STATION_TYPES = ['관리역', '보통역', '무인역', '신호장', '신호소', ''] as const;
+
+interface EditForm {
+  center_kp: string;
+  yard_start_kp: string;
+  yard_end_kp: string;
+  lat: string;
+  lon: string;
+  station_role: string;
+  station_type: string;
+  is_baseline_anchor: boolean;
+}
+
+function pointToForm(p: RailRouteStationPoint): EditForm {
+  return {
+    center_kp: p.center_kp != null ? String(p.center_kp) : '',
+    yard_start_kp: p.yard_start_kp != null ? String(p.yard_start_kp) : '',
+    yard_end_kp: p.yard_end_kp != null ? String(p.yard_end_kp) : '',
+    lat: p.lat != null ? String(p.lat) : '',
+    lon: p.lon != null ? String(p.lon) : '',
+    station_role: p.station_role ?? '',
+    station_type: p.station_type ?? '',
+    is_baseline_anchor: p.is_baseline_anchor,
+  };
+}
+
+const INPUT_SM = 'w-full h-7 border rounded px-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400';
+const SELECT_SM = `${INPUT_SM} bg-white`;
+
 // ── 1단계: 노선 목록 ──────────────────────────────────────────────────────────
 
 function RouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }) {
@@ -88,7 +122,6 @@ function RouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }
 
   return (
     <div className="h-full flex flex-col gap-4">
-      {/* 헤더 */}
       <div className="flex items-center gap-3 flex-wrap shrink-0">
         <h1 className="text-lg font-semibold text-gray-800">역/KP 관리</h1>
         <input
@@ -122,7 +155,6 @@ function RouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }
         </span>
       </div>
 
-      {/* 집계 요약 */}
       <div className="flex gap-3 shrink-0">
         {[
           { label: '노선 수', val: routes.length, cls: 'bg-blue-50 text-blue-700' },
@@ -136,7 +168,6 @@ function RouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }
         ))}
       </div>
 
-      {/* 노선 목록 테이블 */}
       <div className="flex-1 overflow-auto border rounded-lg">
         <table className="w-full text-sm border-collapse">
           <thead className="bg-gray-50 sticky top-0">
@@ -195,7 +226,7 @@ function RouteListView({ onSelect }: { onSelect: (r: RouteListSummary) => void }
   );
 }
 
-// ── 2단계: 노선 상세 (역/KP 목록) ────────────────────────────────────────────
+// ── 2단계: 노선 상세 (역/KP 목록 + 인라인 수정) ───────────────────────────────
 
 function StationDetailView({
   route,
@@ -204,12 +235,63 @@ function StationDetailView({
   route: RouteListSummary;
   onBack: () => void;
 }) {
+  const qc = useQueryClient();
   const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all');
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<EditForm | null>(null);
+  const [notice, setNotice] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null);
 
   const { data: stationPoints = [], isLoading } = useQuery({
     queryKey: ['reference-station-points', route.id],
     queryFn: () => fetchRouteStationPoints(route.id),
   });
+
+  const saveMut = useMutation({
+    mutationFn: ({ id, form }: { id: number; form: EditForm }) => {
+      const body: Parameters<typeof updateStationPoint>[1] = {
+        center_kp: form.center_kp !== '' ? Number(form.center_kp) : undefined,
+        yard_start_kp: form.yard_start_kp !== '' ? Number(form.yard_start_kp) : undefined,
+        yard_end_kp: form.yard_end_kp !== '' ? Number(form.yard_end_kp) : undefined,
+        lat: form.lat !== '' ? Number(form.lat) : undefined,
+        lon: form.lon !== '' ? Number(form.lon) : undefined,
+        station_role: form.station_role || undefined,
+        station_type: form.station_type || undefined,
+        is_baseline_anchor: form.is_baseline_anchor,
+      };
+      return updateStationPoint(id, body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['reference-station-points', route.id] });
+      qc.invalidateQueries({ queryKey: ['route-summaries'] });
+      setEditingId(null);
+      setEditForm(null);
+      setNotice({ type: 'ok', msg: '저장되었습니다.' });
+      setTimeout(() => setNotice(null), 3000);
+    },
+    onError: (e: AxiosError<{ detail: string }>) => {
+      setNotice({ type: 'err', msg: e.response?.data?.detail ?? '저장에 실패했습니다.' });
+      setTimeout(() => setNotice(null), 4000);
+    },
+  });
+
+  function startEdit(p: RailRouteStationPoint) {
+    setEditingId(p.id);
+    setEditForm(pointToForm(p));
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditForm(null);
+  }
+
+  function handleSave(id: number) {
+    if (!editForm) return;
+    saveMut.mutate({ id, form: editForm });
+  }
+
+  function setFormField<K extends keyof EditForm>(k: K, v: EditForm[K]) {
+    setEditForm(prev => prev ? { ...prev, [k]: v } : prev);
+  }
 
   const withCenterKp = stationPoints.filter(p => p.center_kp != null).length;
   const withGps      = stationPoints.filter(p => p.lat != null && p.lon != null).length;
@@ -259,29 +341,119 @@ function StationDetailView({
         </span>
       </div>
 
+      {/* 알림 배너 */}
+      {notice && (
+        <div className={`px-4 py-2 rounded text-sm shrink-0 ${
+          notice.type === 'ok'
+            ? 'bg-green-50 text-green-700 border border-green-200'
+            : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
+          {notice.msg}
+        </div>
+      )}
+
       {/* 역 테이블 */}
       <div className="flex-1 overflow-auto border rounded-lg">
         <table className="w-full text-sm border-collapse">
           <thead className="bg-gray-50 sticky top-0">
             <tr>
-              {['검증', '순번', '역명', '중심 KP', '구내 시작 KP', '구내 종료 KP', 'GPS', '역 구분', '지역본부', '기준선'].map(h => (
+              {['검증', '순번', '역명', '중심 KP', '구내 시작 KP', '구내 종료 KP', 'GPS', '역 구분', '지역본부', '기준선', ''].map(h => (
                 <th key={h} className="px-3 py-2.5 text-left text-xs font-medium text-gray-500 border-b whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {isLoading && (
-              <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-400">조회 중...</td></tr>
+              <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-400">조회 중...</td></tr>
             )}
             {!isLoading && filtered.length === 0 && (
-              <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-400">조회 결과가 없습니다.</td></tr>
+              <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-400">조회 결과가 없습니다.</td></tr>
             )}
             {!isLoading && filtered.map(point => {
               const v = validateStationPoint(point);
+              const isEditing = editingId === point.id;
+
+              if (isEditing && editForm) {
+                return (
+                  <tr key={point.id} className="border-b bg-blue-50">
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${validationBadge(v)}`}>{v.label}</span>
+                    </td>
+                    <td className="px-3 py-1.5 tabular-nums text-gray-500 text-xs">{point.route_sequence_no ?? '—'}</td>
+                    <td className="px-3 py-1.5 font-medium text-gray-800 whitespace-nowrap text-xs">
+                      {point.station_name}<span className="ml-1 text-gray-400">{point.station_code}</span>
+                    </td>
+                    {/* 중심 KP */}
+                    <td className="px-1.5 py-1.5" style={{ minWidth: 72 }}>
+                      <input type="number" step="0.001" value={editForm.center_kp}
+                        onChange={e => setFormField('center_kp', e.target.value)}
+                        className={INPUT_SM} placeholder="KP" />
+                    </td>
+                    {/* 구내 시작 KP */}
+                    <td className="px-1.5 py-1.5" style={{ minWidth: 72 }}>
+                      <input type="number" step="0.001" value={editForm.yard_start_kp}
+                        onChange={e => setFormField('yard_start_kp', e.target.value)}
+                        className={INPUT_SM} placeholder="KP" />
+                    </td>
+                    {/* 구내 종료 KP */}
+                    <td className="px-1.5 py-1.5" style={{ minWidth: 72 }}>
+                      <input type="number" step="0.001" value={editForm.yard_end_kp}
+                        onChange={e => setFormField('yard_end_kp', e.target.value)}
+                        className={INPUT_SM} placeholder="KP" />
+                    </td>
+                    {/* GPS */}
+                    <td className="px-1.5 py-1.5" style={{ minWidth: 160 }}>
+                      <div className="flex gap-1">
+                        <input type="number" step="0.000001" value={editForm.lat}
+                          onChange={e => setFormField('lat', e.target.value)}
+                          className={INPUT_SM} placeholder="위도" />
+                        <input type="number" step="0.000001" value={editForm.lon}
+                          onChange={e => setFormField('lon', e.target.value)}
+                          className={INPUT_SM} placeholder="경도" />
+                      </div>
+                    </td>
+                    {/* 역 구분 */}
+                    <td className="px-1.5 py-1.5" style={{ minWidth: 140 }}>
+                      <div className="flex gap-1">
+                        <select value={editForm.station_role} onChange={e => setFormField('station_role', e.target.value)} className={SELECT_SM}>
+                          {STATION_ROLES.map(r => <option key={r} value={r}>{r || '—'}</option>)}
+                        </select>
+                        <select value={editForm.station_type} onChange={e => setFormField('station_type', e.target.value)} className={SELECT_SM}>
+                          {STATION_TYPES.map(t => <option key={t} value={t}>{t || '—'}</option>)}
+                        </select>
+                      </div>
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-500 whitespace-nowrap text-xs">{point.regional_org ?? '—'}</td>
+                    {/* 기준선 */}
+                    <td className="px-1.5 py-1.5">
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input type="checkbox" checked={editForm.is_baseline_anchor}
+                          onChange={e => setFormField('is_baseline_anchor', e.target.checked)}
+                          className="accent-green-600" />
+                        <span className="text-xs text-gray-500">사용</span>
+                      </label>
+                    </td>
+                    {/* 저장/취소 */}
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleSave(point.id)}
+                          disabled={saveMut.isPending}
+                          className="text-xs text-blue-600 hover:underline font-medium disabled:opacity-50"
+                        >
+                          저장
+                        </button>
+                        <button onClick={cancelEdit} className="text-xs text-gray-500 hover:underline">취소</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+
               return (
                 <tr key={point.id} className="border-b hover:bg-blue-50 transition-colors">
                   <td className="px-3 py-2.5 whitespace-nowrap">
-                    <span title={v.issues.join(', ')} className={`px-2 py-0.5 rounded-full text-xs ${validationBadge(v)}`}>{v.label}</span>
+                    <span title={v.issues.join(', ')} className={`px-2 py-0.5 rounded-full text-xs cursor-default ${validationBadge(v)}`}>{v.label}</span>
                   </td>
                   <td className="px-3 py-2.5 tabular-nums text-gray-500">{point.route_sequence_no ?? '—'}</td>
                   <td className="px-3 py-2.5 font-medium text-gray-800 whitespace-nowrap">
@@ -298,6 +470,14 @@ function StationDetailView({
                       ? <span className="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">사용</span>
                       : <span className="px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500">제외</span>
                     }
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <button
+                      onClick={() => startEdit(point)}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      수정
+                    </button>
                   </td>
                 </tr>
               );

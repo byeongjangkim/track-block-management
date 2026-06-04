@@ -6,7 +6,7 @@ import { fetchOrganizations } from '../../api/organizations';
 import { fetchDepotRoutes, fetchRailSubstations } from '../../api/map';
 import { useAuthStore } from '../../store/authStore';
 import type { BlockOrder, BlockOrderCreate, TrackName } from '../../types';
-import { availableTracks } from '../../types';
+import { availableTracks, HIGH_SPEED_TRACKS, T_TRACK_LABEL } from '../../types';
 import type { AxiosError } from 'axios';
 
 interface Props {
@@ -44,6 +44,16 @@ const EMPTY: BlockOrderCreate = {
   start_rail_facility_id: null,
   end_rail_facility_id: null,
   danger_level: null,
+  parent_id: null,
+  equipment_name: '',
+  speed_restriction: null,
+  speed_restriction_note: '',
+  catenary_protection: null,
+  zep: '',
+  zcp: '',
+  cpt: '',
+  tzep: '',
+  worker_count: null,
   work_date: today(),
   start_time: '09:00',
   end_time: '17:00',
@@ -101,6 +111,16 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
           start_rail_facility_id: initial.start_rail_facility_id ?? null,
           end_rail_facility_id: initial.end_rail_facility_id ?? null,
           danger_level: initial.danger_level ?? null,
+          parent_id: initial.parent_id ?? null,
+          equipment_name: initial.equipment_name ?? '',
+          speed_restriction: initial.speed_restriction ?? null,
+          speed_restriction_note: initial.speed_restriction_note ?? '',
+          catenary_protection: initial.catenary_protection ?? null,
+          zep:  initial.zep  ?? '',
+          zcp:  initial.zcp  ?? '',
+          cpt:  initial.cpt  ?? '',
+          tzep: initial.tzep ?? '',
+          worker_count: initial.worker_count ?? null,
           work_date: initial.work_date,
           start_time: initial.start_time.slice(0, 5),
           end_time: initial.end_time.slice(0, 5),
@@ -152,7 +172,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
     if (!isSuperuser && user?.organization_id && !form.organization_id) {
       setForm((f) => ({ ...f, organization_id: user.organization_id ?? undefined }));
     }
-  }, [isSuperuser, user?.organization_id]);
+  }, [isSuperuser, user?.organization_id, form.organization_id]);
 
   const [error, setError] = useState('');
 
@@ -291,6 +311,16 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
       train_watcher: form.train_watcher?.trim() || undefined,
       train_watcher_phone: form.train_watcher_phone?.trim() || undefined,
       safety_items: form.safety_items?.trim() || undefined,
+      parent_id: form.parent_id ?? undefined,
+      equipment_name: form.equipment_name?.trim() || undefined,
+      speed_restriction: form.speed_restriction ?? undefined,
+      speed_restriction_note: form.speed_restriction_note?.trim() || undefined,
+      catenary_protection: form.catenary_protection || undefined,
+      zep:  form.zep?.trim()  || undefined,
+      zcp:  form.zcp?.trim()  || undefined,
+      cpt:  form.cpt?.trim()  || undefined,
+      tzep: form.tzep?.trim() || undefined,
+      worker_count: form.worker_count ?? undefined,
       note: form.note?.trim() || undefined,
     };
 
@@ -434,12 +464,28 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
             {(() => {
               const selectedRoute = isDepot ? null : routes.find(r => r.id === form.route_id);
               const trackCount = selectedRoute?.default_track_count ?? 2;
-              const trackOptions = isDepot ? (['상선', '하선'] as TrackName[]) : availableTracks(trackCount);
+              const isHighSpeed = selectedRoute?.line_type === '고속선';
+              const trackOptions: TrackName[] = isDepot
+                ? ['상선', '하선']
+                : isHighSpeed
+                  ? HIGH_SPEED_TRACKS
+                  : availableTracks(trackCount);
+
+              function trackColor(track: TrackName, checked: boolean) {
+                if (!checked) return 'bg-gray-100 text-gray-500';
+                if (track.startsWith('T')) {
+                  const n = parseInt(track.slice(1));
+                  return n % 2 === 1 ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700';
+                }
+                return track.startsWith('상') ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700';
+              }
+
               return (
-                <Field label="차단 선로 *">
+                <Field label={`차단 선로 *${isHighSpeed ? ' (고속선 T번호)' : ''}`}>
                   <div className="flex flex-wrap gap-x-3 gap-y-1.5 pt-1">
                     {trackOptions.map(track => {
                       const checked = (form.tracks as TrackName[]).includes(track);
+                      const label = T_TRACK_LABEL[track] ?? track;
                       return (
                         <label key={track} className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
                           <input
@@ -456,11 +502,9 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
                             }}
                             className="rounded"
                           />
-                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                            checked
-                              ? track.startsWith('상') ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
-                              : 'bg-gray-100 text-gray-500'
-                          }`}>{track}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${trackColor(track, checked)}`}>
+                            {label}
+                          </span>
                         </label>
                       );
                     })}
@@ -761,6 +805,116 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
             </Field>
           </div>
 
+          {/* 투입장비 */}
+          <Field label="투입장비 (작업차량)">
+            <input type="text" value={form.equipment_name ?? ''}
+              onChange={(e) => set('equipment_name', e.target.value)}
+              placeholder="예: MTT, 레일연마기, 유압크레인"
+              className={INPUT} />
+          </Field>
+
+          {/* 열차서행 */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">열차서행</label>
+            <div className="flex gap-2 items-center">
+              <input
+                type="number" min={0} max={300} step={5}
+                value={form.speed_restriction ?? ''}
+                onChange={(e) => set('speed_restriction', e.target.value === '' ? null : Number(e.target.value))}
+                placeholder="제한속도"
+                className={INPUT}
+                style={{ width: '90px' }}
+              />
+              <span className="text-sm text-gray-500">km/h</span>
+              <input type="text" value={form.speed_restriction_note ?? ''}
+                onChange={(e) => set('speed_restriction_note', e.target.value)}
+                placeholder="구간 또는 사유"
+                className={INPUT} />
+            </div>
+          </div>
+
+          {/* 전차선 보호장치 */}
+          <Field label="전차선 보호장치">
+            <div className="flex gap-2">
+              {(['양단접지', '단접지'] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => set('catenary_protection', form.catenary_protection === v ? null : v)}
+                  className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                    form.catenary_protection === v
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+              {form.catenary_protection && (
+                <button type="button" onClick={() => set('catenary_protection', null)}
+                  className="text-xs text-gray-400 hover:text-gray-600 ml-1">
+                  해제
+                </button>
+              )}
+            </div>
+          </Field>
+
+          {/* 관제사 보호조치 / 작업자 보호조치 (고속선) */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">
+              보호조치 코드 <span className="text-gray-400 font-normal">(고속선 전용)</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-[10px] text-gray-500 mb-1">관제사 보호조치</div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-gray-400">ZEP</label>
+                    <input type="text" value={form.zep ?? ''}
+                      onChange={(e) => set('zep', e.target.value)}
+                      placeholder="ZEP 코드" className={INPUT} />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-gray-400">ZCP</label>
+                    <input type="text" value={form.zcp ?? ''}
+                      onChange={(e) => set('zcp', e.target.value)}
+                      placeholder="ZCP 코드" className={INPUT} />
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-500 mb-1">작업자 보호조치</div>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-gray-400">CPT</label>
+                    <input type="text" value={form.cpt ?? ''}
+                      onChange={(e) => set('cpt', e.target.value)}
+                      placeholder="CPT 코드" className={INPUT} />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-gray-400">TZEP</label>
+                    <input type="text" value={form.tzep ?? ''}
+                      onChange={(e) => set('tzep', e.target.value)}
+                      placeholder="TZEP 코드" className={INPUT} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 작업자 수 */}
+          <Field label="작업자 수">
+            <input
+              type="number"
+              min={0}
+              value={form.worker_count ?? ''}
+              onChange={(e) => set('worker_count', e.target.value === '' ? null : Number(e.target.value))}
+              placeholder="인원 수"
+              className={INPUT}
+              style={{ width: '120px' }}
+            />
+          </Field>
+
           {/* 안전관리항목 */}
           <Field label="안전관리항목">
             <textarea rows={3} value={form.safety_items ?? ''}
@@ -785,7 +939,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
             className="px-4 py-2 text-sm border rounded-lg hover:bg-gray-50">
             취소
           </button>
-          <button onClick={handleSubmit as any} disabled={isPending}
+          <button type="button" onClick={handleSubmit} disabled={isPending}
             className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
             {isPending ? '저장 중...' : '저장'}
           </button>

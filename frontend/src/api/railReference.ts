@@ -254,6 +254,28 @@ export async function fetchRouteStationPoints(
   return res.data;
 }
 
+export interface StationPointUpdateBody {
+  center_kp?: number | null;
+  yard_start_kp?: number | null;
+  yard_end_kp?: number | null;
+  is_baseline_anchor?: boolean;
+  lat?: number | null;
+  lon?: number | null;
+  station_role?: string | null;
+  station_type?: string | null;
+}
+
+export async function updateStationPoint(
+  pointId: number,
+  body: StationPointUpdateBody,
+): Promise<RailRouteStationPoint> {
+  const res = await api.patch<RailRouteStationPoint>(
+    `/rail-reference/station-points/${pointId}`,
+    body,
+  );
+  return res.data;
+}
+
 export async function fetchFacilityClassifications(): Promise<RailFacilityClassification[]> {
   const res = await api.get<RailFacilityClassification[]>('/rail-reference/facility-classifications');
   return res.data;

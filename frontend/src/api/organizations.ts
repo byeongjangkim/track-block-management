@@ -11,7 +11,7 @@ export interface Organization {
 export interface RouteRange {
   id: number;
   organization_id: number;
-  route_id: number;
+  rail_route_id: number;
   route_code: string;
   route_name: string;
   field: string;
@@ -30,7 +30,7 @@ export async function fetchRouteRanges(orgId: number): Promise<RouteRange[]> {
 }
 
 export interface RouteRangeBody {
-  route_id: number;
+  rail_route_id: number;
   field: string;
   start_km: number;
   end_km: number;

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db, require_superuser
 from app.models.organization import Organization, OrganizationRouteRange
-from app.models.route import Route
+from app.models.rail_baseline import RailRoute
 from app.models.user import User
 
 router = APIRouter(prefix="/organizations", tags=["조직"])
@@ -47,7 +47,7 @@ class OrganizationUpdate(BaseModel):
 
 
 class RouteRangeItem(BaseModel):
-    route_id: int
+    rail_route_id: int
     field: str = "all"   # 'all' | '시설' | '전기' | '건축'
     start_km: float
     end_km: float
@@ -62,7 +62,7 @@ class RouteRangeResponse(RouteRangeItem):
 
 
 class RouteRangeUpdate(BaseModel):
-    route_id: int | None = None
+    rail_route_id: int | None = None
     field: str | None = None       # 'all' | '시설' | '전기' | '건축'
     start_km: float | None = None
     end_km: float | None = None
@@ -75,7 +75,7 @@ def list_organizations(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    return db.query(Organization).order_by(Organization.id).all()
+    return db.query(Organization).order_by(Organization.sort_order, Organization.id).all()
 
 
 @router.get("/{org_id}", response_model=OrganizationResponse)
@@ -139,20 +139,19 @@ def list_route_ranges(
     rows = (
         db.query(OrganizationRouteRange)
         .filter(OrganizationRouteRange.organization_id == org_id)
-        .order_by(OrganizationRouteRange.route_id, OrganizationRouteRange.field)
+        .order_by(OrganizationRouteRange.rail_route_id, OrganizationRouteRange.field)
         .all()
     )
 
-    # route_code / route_name 조인하여 응답 조립
-    route_map = {r.id: r for r in db.query(Route).all()}
+    route_map = {r.id: r for r in db.query(RailRoute).all()}
     result = []
     for row in rows:
-        route = route_map.get(row.route_id)
+        route = route_map.get(row.rail_route_id)
         result.append(RouteRangeResponse(
             id=row.id,
             organization_id=row.organization_id,
-            route_id=row.route_id,
-            route_code=route.code if route else "",
+            rail_route_id=row.rail_route_id,
+            route_code=route.korail_route_code if route else "",
             route_name=route.name if route else "",
             field=row.field,
             start_km=row.start_km,
@@ -176,9 +175,9 @@ def replace_route_ranges(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="조직을 찾을 수 없습니다")
 
     # 노선 id 유효성 확인
-    route_ids = {item.route_id for item in body}
-    valid_ids = {r.id for r in db.query(Route).filter(Route.id.in_(route_ids)).all()}
-    invalid = route_ids - valid_ids
+    rail_route_ids = {item.rail_route_id for item in body}
+    valid_ids = {r.id for r in db.query(RailRoute).filter(RailRoute.id.in_(rail_route_ids)).all()}
+    invalid = rail_route_ids - valid_ids
     if invalid:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"존재하지 않는 노선 id: {invalid}")
 
@@ -187,18 +186,18 @@ def replace_route_ranges(
         OrganizationRouteRange.organization_id == org_id
     ).delete()
 
-    route_map = {r.id: r for r in db.query(Route).all()}
+    route_map = {r.id: r for r in db.query(RailRoute).all()}
     new_rows = []
     for item in body:
         row = OrganizationRouteRange(
             organization_id=org_id,
-            route_id=item.route_id,
+            rail_route_id=item.rail_route_id,
             field=item.field,
             start_km=item.start_km,
             end_km=item.end_km,
         )
         db.add(row)
-        new_rows.append((row, route_map.get(item.route_id)))
+        new_rows.append((row, route_map.get(item.rail_route_id)))
 
     db.commit()
 
@@ -208,8 +207,8 @@ def replace_route_ranges(
         result.append(RouteRangeResponse(
             id=row.id,
             organization_id=row.organization_id,
-            route_id=row.route_id,
-            route_code=route.code if route else "",
+            rail_route_id=row.rail_route_id,
+            route_code=route.korail_route_code if route else "",
             route_name=route.name if route else "",
             field=row.field,
             start_km=row.start_km,
@@ -232,7 +231,7 @@ def add_route_range(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="조직을 찾을 수 없습니다")
 
-    route = db.query(Route).filter(Route.id == body.route_id).first()
+    route = db.query(RailRoute).filter(RailRoute.id == body.rail_route_id).first()
     if not route:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="존재하지 않는 노선 id")
 
@@ -240,7 +239,7 @@ def add_route_range(
         db.query(OrganizationRouteRange)
         .filter(
             OrganizationRouteRange.organization_id == org_id,
-            OrganizationRouteRange.route_id == body.route_id,
+            OrganizationRouteRange.rail_route_id == body.rail_route_id,
             OrganizationRouteRange.field == body.field,
         )
         .first()
@@ -253,7 +252,7 @@ def add_route_range(
 
     row = OrganizationRouteRange(
         organization_id=org_id,
-        route_id=body.route_id,
+        rail_route_id=body.rail_route_id,
         field=body.field,
         start_km=body.start_km,
         end_km=body.end_km,
@@ -265,8 +264,8 @@ def add_route_range(
     return RouteRangeResponse(
         id=row.id,
         organization_id=row.organization_id,
-        route_id=row.route_id,
-        route_code=route.code,
+        rail_route_id=row.rail_route_id,
+        route_code=route.korail_route_code,
         route_name=route.name,
         field=row.field,
         start_km=row.start_km,
@@ -302,12 +301,12 @@ def update_route_range(
     db.commit()
     db.refresh(row)
 
-    route = db.query(Route).filter(Route.id == row.route_id).first()
+    route = db.query(RailRoute).filter(RailRoute.id == row.rail_route_id).first()
     return RouteRangeResponse(
         id=row.id,
         organization_id=row.organization_id,
-        route_id=row.route_id,
-        route_code=route.code if route else "",
+        rail_route_id=row.rail_route_id,
+        route_code=route.korail_route_code if route else "",
         route_name=route.name if route else "",
         field=row.field,
         start_km=row.start_km,

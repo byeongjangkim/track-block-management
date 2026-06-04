@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchBlockOrders, deleteBlockOrder, uploadDocument } from '../api/blockOrders';
+import { apiUrl } from '../api/client';
 import { fetchRoutes } from '../api/routes';
 import { fetchOrganizations } from '../api/organizations';
 import { useAuthStore } from '../store/authStore';
@@ -406,7 +407,7 @@ export default function BlockOrdersPage() {
                   <td className="px-3 py-2 text-center" onClick={(e) => e.stopPropagation()}>
                     {o.document_path ? (
                       <a
-                        href={`${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/api/v1/documents/${o.document_path}`}
+                        href={apiUrl(`/api/v1/documents/${o.document_path}`)}
                         target="_blank"
                         rel="noreferrer"
                         className="text-xs text-blue-600 hover:underline"
