@@ -1,7 +1,6 @@
 # DB 스키마
 
-> PostgreSQL 16 (`track_block`) — 모든 데이터는 API를 통해서만 접근  
-> SQLite → PostgreSQL 전환 완료 (2026-06-05)
+> PostgreSQL 16 (`track_block`) — 모든 데이터는 API를 통해서만 접근
 
 ---
 
@@ -152,7 +151,7 @@ alembic current
 | tc03 | rail_facilities.bore_type |
 | tc04 | system_settings 테이블 + 색상 시드 |
 | tc05 | direction → tracks TEXT(JSON), 단선차단→선로차단 통합 |
-| tc06 | org_route_ranges: route_id(legacy) → rail_route_id (PostgreSQL/SQLite 분기) |
+| tc06 | org_route_ranges: route_id(legacy) → rail_route_id (153개 노선) |
 | tc07 | organizations.sort_order |
 | tc08 | block_orders: catenary_protection / ZEP·ZCP·CPT·TZEP / worker_count |
 | tc09 | block_orders: parent_id / equipment_name / speed_restriction[_note] |

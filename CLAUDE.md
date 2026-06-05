@@ -375,7 +375,7 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 
 ## 절대 커밋 금지
 
-`backend/.env` · `backend/db.sqlite3` · `frontend/.env.local`
+`backend/.env` · `frontend/.env.local` · `backend/scripts/dumps/*.sql`
 
 ---
 

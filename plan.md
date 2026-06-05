@@ -8,7 +8,7 @@
 
 | 구분 | 내용 |
 |---|---|
-| **DB** | PostgreSQL 16 전환 완료 (SQLite → pg 22,438건 이전) |
+| **DB** | PostgreSQL 16 (`track_block`) |
 | DB 스키마 | tc01~tc09 마이그레이션 완료 |
 | 권한/조직 | 14개 조직, 3단계 role, sort_order 정렬, 관할구간 검증 |
 | 차단명령 CRUD | 등록/수정/삭제, PDF 일괄 파싱, 연속작업 감지 |
@@ -76,12 +76,11 @@
 
 ## 주요 아키텍처 결정 이력
 
-### PostgreSQL 전환 (2026-06-05)
-- **결정**: SQLite → PostgreSQL 16 (Homebrew)
-- **근거**: 개발 초기 단계에서 전환하는 것이 이후 마이그레이션보다 효율적
-- **방법**: `Base.metadata.create_all(engine)` + `alembic stamp head` + 데이터 이전 스크립트
-- **주의**: Boolean 컬럼 비교는 `= TRUE` (SQLite `= 1` 불가), SERIAL 시퀀스 갱신 필수
-- **배포 전략**: pg_dump 선별 덤프(기준데이터) + Alembic 마이그레이션(스키마) + seed 스크립트(사용자)
+### DB: PostgreSQL 16 (2026-06-05)
+- **결정**: PostgreSQL 16 (Homebrew) 단독 운영
+- **마이그레이션**: tc01~tc09 → `v1_initial_schema` 단일 파일로 통합
+- **Boolean**: 컬럼 비교는 반드시 `= TRUE` / `= FALSE`
+- **배포 전략**: `dump_reference_data.sh` + `restore_reference_data.sh` + seed 스크립트 3개
 
 ### 고속선 선로 번호 체계 (2026-06-05, tc09)
 - **결정**: T1~T8 선로명 추가 (기존 상선/하선/상1~하3에 추가)

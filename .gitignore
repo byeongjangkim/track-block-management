@@ -10,8 +10,10 @@
 # ============================================================
 backend/.venv/
 backend/.env
-backend/db.sqlite3
 backend/uploads/
+# PostgreSQL 덤프 파일 (대용량, 별도 관리)
+backend/*.sql
+backend/scripts/dumps/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/**/*.pyc
@@ -44,3 +46,4 @@ maps/data/korea_sido_full.geojson
 # ============================================================
 scripts/**/__pycache__/
 scripts/**/*.pyc
+backend/db.sqlite3
