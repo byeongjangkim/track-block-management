@@ -1,7 +1,7 @@
 # 선로차단작업 관리 프로그램
 
 KORAIL 전국 선로차단작업 승인 내역 통합 관리 웹 앱.  
-14개 조직(지역본부 12 + 사업단 2), 전국 51개 노선을 단일 시스템에서 관리한다.
+14개 조직(지역본부 12 + 사업단 2), 전국 153개 노선을 단일 시스템에서 관리한다.
 
 ---
 
@@ -13,7 +13,7 @@ KORAIL 전국 선로차단작업 승인 내역 통합 관리 웹 앱.
 | Python | 3.12 / Node.js 22 |
 | 백엔드 포트 | **7000** |
 | 프론트엔드 포트 | **7001** |
-| DB | `backend/db.sqlite3` (SQLite) |
+| DB | **PostgreSQL 16** (`track_block`) |
 
 ```bash
 # 백엔드
@@ -22,6 +22,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 7000 --reload
 
 # 프론트엔드
 cd frontend && npm run dev
+
+# PostgreSQL 서버 상태 확인
+brew services list | grep postgresql
 ```
 
 ---
@@ -43,7 +46,7 @@ track-block-management/
 
 | 계층 | 기술 |
 |---|---|
-| 백엔드 | FastAPI + SQLAlchemy 2.x (SQLite) + Alembic + JWT |
+| 백엔드 | FastAPI + SQLAlchemy 2.x (**PostgreSQL 16**) + Alembic + JWT |
 | 프론트엔드 | React 18 + TypeScript + Vite + D3.js v7 + Tailwind CSS v4 |
 | GIS | D3 geoMercator + rail_baseline_points KP 보간 |
 
@@ -351,6 +354,10 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 | `tc03_bore_type` | rail_facilities.bore_type (터널·교량 선로 방식) |
 | `tc04_system_settings` | system_settings 테이블 + 색상 시드 |
 | `tc05_tracks_field` | direction → tracks TEXT(JSON), 단선차단/복선차단 → 선로차단 |
+| `tc06_org_ranges_rail_route` | org_route_ranges: route_id(legacy) → rail_route_id(153개 노선) |
+| `tc07_org_sort_order` | organizations.sort_order 추가 |
+| `tc08_block_order_protection_fields` | catenary_protection / ZEP·ZCP·CPT·TZEP / worker_count |
+| `tc09_block_order_parent` | parent_id / equipment_name / speed_restriction |
 
 ---
 
@@ -369,6 +376,26 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 ## 절대 커밋 금지
 
 `backend/.env` · `backend/db.sqlite3` · `frontend/.env.local`
+
+---
+
+## 고속선 선로 번호 체계
+
+고속선(line_type='고속선')은 일반선과 선로 명칭이 다르다.
+
+| T번호 | 방향 | 일반선 대응 | 위치 |
+|---|---|---|---|
+| T1 | 하선 | 하1 | 중심에서 1번째 |
+| T2 | 상선 | 상1 | 중심에서 1번째 |
+| T3 | 하선 | 하2 | 중심에서 2번째 |
+| T4 | 상선 | 상2 | 중심에서 2번째 |
+| T5 | 하선 | 하3 | 중심에서 3번째 |
+| T6 | 상선 | 상3 | 중심에서 3번째 |
+| T7 | 하선 | 하4 | 중심에서 4번째 |
+| T8 | 상선 | 상4 | 중심에서 4번째 |
+
+홀수=하선, 짝수=상선, 중심에서 외측 방향으로 번호 증가.  
+일반선/고속선 구분 없이 동일 필드에 저장, 입력 폼은 고속선 선택 시 T번호 표시.
 
 ---
 
