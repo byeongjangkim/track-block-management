@@ -118,6 +118,12 @@ function InlineDetail({
         </span>
         <span className="text-gray-400">분야/종류</span>
         <span className="text-gray-800">{order.field} / {order.block_type}</span>
+        {(order.start_rail_facility_id || order.start_facility_id) && order.section_note && (
+          <>
+            <span className="text-gray-400">전차선 단전</span>
+            <span className="text-emerald-700 font-medium">{order.section_note}</span>
+          </>
+        )}
         {order.block_method && (
           <>
             <span className="text-gray-400">차단방법</span>

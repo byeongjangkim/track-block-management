@@ -568,6 +568,11 @@ const CATENARY_BLOCK_TYPES = new Set(['전차선단전']);
  * 선로 이름 → 해당 선로의 UP 방향 여부.
  */
 function isUpTrack(trackName: string): boolean {
+  // T번호 (고속선): 짝수=상선, 홀수=하선
+  if (trackName.startsWith('T')) {
+    const n = parseInt(trackName.slice(1));
+    return !isNaN(n) && n % 2 === 0;
+  }
   return trackName === '상선' || trackName.startsWith('상');
 }
 
@@ -582,19 +587,29 @@ function isUpTrack(trackName: string): boolean {
  * fallback: 상 계열 → 최외방 상선(index=0), 하 계열 → 최외방 하선(index=trackCount-1)
  */
 function trackNameToIndex(trackName: string, trackCount: number): number {
+  // T번호 처리 (고속선): T1=하1(중심), T2=상1(중심), T3=하2, T4=상2...
+  // 홀수=하선, 짝수=상선, 중심에서 외측으로 번호 증가
+  if (trackName.startsWith('T')) {
+    const n = parseInt(trackName.slice(1));
+    if (!isNaN(n) && trackCount >= 2) {
+      const pos  = Math.ceil(n / 2);          // T1,T2→1, T3,T4→2, T5,T6→3
+      const half = Math.floor(trackCount / 2);
+      if (n % 2 === 0) return half - pos;     // 상선: T2(tc=2)→0, T2(tc=4)→1, T4→0
+      else             return half + pos - 1; // 하선: T1(tc=2)→1, T1(tc=4)→2, T3→3
+    }
+  }
+
   if (trackCount === 1) return 0;
 
   if (trackCount === 2) {
     if (trackName === '상선') return 0;
     if (trackName === '하선') return 1;
-    // 상1/상2 → 상선으로 처리, 하1/하2 → 하선으로 처리
     return isUpTrack(trackName) ? 0 : 1;
   }
 
   if (trackCount === 4) {
     const MAP: Record<string, number> = { '상1': 0, '상2': 1, '하1': 2, '하2': 3 };
     if (MAP[trackName] !== undefined) return MAP[trackName];
-    // 복선 이름 입력 시: 상선→최외방 상1(0), 하선→최외방 하2(3)
     if (trackName === '상선') return 0;
     if (trackName === '하선') return 3;
     return isUpTrack(trackName) ? 0 : 3;

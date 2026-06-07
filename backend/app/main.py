@@ -27,12 +27,18 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """미처리 예외를 JSON 500으로 변환 — CORS 미들웨어가 헤더를 추가할 수 있도록 한다."""
+    """미처리 예외를 JSON 500으로 변환.
+    ExceptionMiddleware는 CORSMiddleware 외부에 있어 응답이 CORS 미들웨어를 우회하므로
+    여기서 CORS 헤더를 직접 추가한다."""
     logger.exception("Unhandled exception: %s %s", request.method, request.url)
-    return JSONResponse(
+    response = JSONResponse(
         status_code=500,
         content={"detail": f"서버 내부 오류: {type(exc).__name__}"},
     )
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 # 라우터 등록
 PREFIX = "/api/v1"

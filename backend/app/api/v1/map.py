@@ -523,6 +523,54 @@ def get_org_viewport(
 _CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start', 'facility_end')"
 
 
+def _catenary_tracks_from_note(
+    section_note: str | None,
+    route_track_count: int,
+    rail_route,
+) -> list[str]:
+    """section_note에서 전차선 단전 선로 목록 추출.
+    형식: "변전소1~변전소2 [T1,T2]" (대괄호) 또는 "변전소1~변전소2 (상하선)" (괄호 레거시)
+    없으면 노선 전체 선로 반환."""
+    is_hs = bool(rail_route and getattr(rail_route, "line_type", None) == "고속선")
+    tc = route_track_count or 2
+
+    if section_note:
+        # 대괄호 형식: [T1,T2,T3] 또는 [상선,하선]
+        m = re.search(r"\[([^\]]+)\]", section_note)
+        if m:
+            return [t.strip() for t in m.group(1).split(",") if t.strip()]
+        # 괄호 형식 (레거시): (상하선), (상선), (하선)
+        m = re.search(r"\(([^)]+)\)", section_note)
+        if m:
+            return _expand_catenary_dir(m.group(1).strip(), tc, is_hs)
+
+    return _expand_catenary_dir("상하선", tc, is_hs)
+
+
+def _expand_catenary_dir(direction: str, track_count: int, is_high_speed: bool) -> list[str]:
+    """방향 문자열 → 선로 목록."""
+    tc = track_count or 2
+    if is_high_speed:
+        all_t = [f"T{i}" for i in range(1, tc + 1)]
+        if direction in ("상선", "상"):
+            return [t for t in all_t if int(t[1:]) % 2 == 0]  # 짝수=상선
+        if direction in ("하선", "하"):
+            return [t for t in all_t if int(t[1:]) % 2 == 1]  # 홀수=하선
+        return all_t  # 상하선 / 전체
+    # 일반선
+    if tc == 1:
+        return ["상선"]
+    half = tc // 2
+    if direction in ("상선", "상"):
+        return ["상선"] if half == 1 else [f"상{i}" for i in range(1, half + 1)]
+    if direction in ("하선", "하"):
+        return ["하선"] if half == 1 else [f"하{i}" for i in range(1, half + 1)]
+    # 상하선
+    if half == 1:
+        return ["상선", "하선"]
+    return [f"상{i}" for i in range(1, half + 1)] + [f"하{i}" for i in range(1, half + 1)]
+
+
 def _get_station_mode(db: Session) -> str:
     """system_settings에서 station_points_mode를 읽어 반환. 기본 'center_only'."""
     row = db.execute(
@@ -601,7 +649,9 @@ def _rail_kp_range_coords(
     # buildOffsetPath는 각 포인트의 수직 방향을 이웃 포인트로 계산한다.
     # 블록 시작점의 앞 앵커(start 직전)가 없으면 노선 경로와 법선 방향이 달라져
     # 오프셋 위치가 어긋난다. → start 직전 앵커 1개를 맥락으로 선행 추가.
-    before_rows = [r for r in rows if r.kp <= start]
+    # ⚠️ strictly < 사용: start가 anchor KP와 일치할 때 start 자신이 context로
+    #    들어가면 frontend slice(1,-1) 처리 시 실제 시작 좌표가 제거됨.
+    before_rows = [r for r in rows if r.kp < start]
     if before_rows:
         prev = before_rows[-1]
         coords.append([prev.lon, prev.lat])
@@ -814,36 +864,90 @@ def get_block_order_segments(
             track_list = _json.loads(bo.tracks) if isinstance(bo.tracks, str) else bo.tracks
         except Exception:
             track_list = ["상선"]
+
+        def _make_prop(track_val, blk_type=None, sec_type=None, s_kp=None, e_kp=None,
+                       d_km=None, s_note=None):
+            return {
+                "id":                bo.id,
+                "route_id":          bo.route_id,
+                "rail_route_id":     bo.rail_route_id,
+                "route_code":        route_code,
+                "route_name":        route_name,
+                "track":             track_val,
+                "route_track_count": route_track_count,
+                "section_type":      sec_type if sec_type is not None else section_type,
+                "start_km":          bo.start_km,
+                "end_km":            bo.end_km,
+                "start_kp":          s_kp if s_kp is not None else start_kp,
+                "end_kp":            e_kp if e_kp is not None else end_kp,
+                "section_note":      s_note if s_note is not None else section_note,
+                "display_km":        d_km if d_km is not None else display_km,
+                "work_date":         bo.work_date.isoformat(),
+                "start_time":        bo.start_time.strftime("%H:%M"),
+                "end_time":          bo.end_time.strftime("%H:%M"),
+                "field":             bo.field,
+                "block_type":        blk_type if blk_type is not None else bo.block_type,
+                "work_type":         bo.work_type,
+                "implementer":       bo.implementer,
+                "danger_level":      bo.danger_level,
+                "organization_id":   bo.organization_id,
+            }
+
         for track_val in track_list:
             features.append({
                 "type": "Feature",
-                "properties": {
-                    "id":                bo.id,
-                    "route_id":          bo.route_id,
-                    "rail_route_id":     bo.rail_route_id,
-                    "route_code":        route_code,
-                    "route_name":        route_name,
-                    "track":             track_val,
-                    "route_track_count": route_track_count,
-                    "section_type":      section_type,
-                    "start_km":          bo.start_km,
-                    "end_km":            bo.end_km,
-                    "start_kp":          start_kp,
-                    "end_kp":            end_kp,
-                    "section_note":      section_note,
-                    "display_km":        display_km,
-                    "work_date":         bo.work_date.isoformat(),
-                    "start_time":        bo.start_time.strftime("%H:%M"),
-                    "end_time":          bo.end_time.strftime("%H:%M"),
-                    "field":             bo.field,
-                    "block_type":        bo.block_type,
-                    "work_type":         bo.work_type,
-                    "implementer":       bo.implementer,
-                    "danger_level":      bo.danger_level,
-                    "organization_id":   bo.organization_id,
-                },
+                "properties": _make_prop(track_val),
                 "geometry": {"type": "LineString", "coordinates": coords},
             })
+
+        # ── 선로차단 블록에 전차선단전 정보가 포함된 경우 추가 catenary features 생성
+        if section_type == "normal" and (bo.start_rail_facility_id or bo.start_facility_id):
+            rf_s = (db.query(RailFacility).filter(RailFacility.id == bo.start_rail_facility_id).first()
+                    if bo.start_rail_facility_id else None)
+            rf_e = (db.query(RailFacility).filter(RailFacility.id == bo.end_rail_facility_id).first()
+                    if bo.end_rail_facility_id else None)
+            f_s  = (db.query(Facility).filter(Facility.id == bo.start_facility_id).first()
+                    if bo.start_facility_id else None)
+            f_e  = (db.query(Facility).filter(Facility.id == bo.end_facility_id).first()
+                    if bo.end_facility_id else None)
+
+            cat_kp_start = cat_kp_end = None
+            cat_note = bo.section_note
+            cat_coords: list = []
+
+            if rf_s and rf_e and rf_s.kp_start is not None and rf_e.kp_start is not None:
+                cat_kp_start = rf_s.kp_start
+                cat_kp_end   = rf_e.kp_start
+                cat_note = bo.section_note or f"{rf_s.name}~{rf_e.name}"
+                if bo.rail_route_id:
+                    cat_coords = _rail_kp_range_coords(db, bo.rail_route_id, cat_kp_start, cat_kp_end, center_only=center_only)
+                elif rf_s.lat and rf_s.lon and rf_e.lat and rf_e.lon:
+                    cat_coords = [[rf_s.lon, rf_s.lat], [rf_e.lon, rf_e.lat]]
+            elif f_s and f_e and f_s.km is not None and f_e.km is not None:
+                cat_kp_start = f_s.km
+                cat_kp_end   = f_e.km
+                cat_note = bo.section_note or f"{f_s.name}~{f_e.name}"
+                if bo.rail_route_id:
+                    cat_coords = _rail_kp_range_coords(db, bo.rail_route_id, cat_kp_start, cat_kp_end, center_only=center_only)
+                elif f_s.lat and f_s.lon and f_e.lat and f_e.lon:
+                    cat_coords = [[f_s.lon, f_s.lat], [f_e.lon, f_e.lat]]
+
+            if len(cat_coords) >= 2 and cat_kp_start is not None:
+                cat_tracks = _catenary_tracks_from_note(cat_note, route_track_count, rail_route)
+                for t_val in cat_tracks:
+                    features.append({
+                        "type": "Feature",
+                        "properties": _make_prop(
+                            t_val,
+                            blk_type="전차선단전",
+                            sec_type="power_cut",
+                            s_kp=cat_kp_start,
+                            e_kp=cat_kp_end,
+                            d_km=f"{cat_kp_start}~{cat_kp_end}",
+                            s_note=cat_note,
+                        ),
+                        "geometry": {"type": "LineString", "coordinates": cat_coords},
+                    })
 
     return {"type": "FeatureCollection", "features": features, "work_date": target_date.isoformat()}
 

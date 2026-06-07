@@ -50,6 +50,12 @@ _CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start
 KP 범위 → 좌표 목록.  
 시작/종료점은 보간, 중간 앵커는 범위 내 실제 포인트 사용.
 
+반환 좌표 구조: `[context_before, start_pt, ...anchors..., end_pt, context_after]`  
+frontend `buildOffsetPath`에서 `slice(1,-1)` 적용 → context 앵커 제거 후 렌더링.
+
+**⚠️ context anchor 조건**: `before_rows = [r for r in rows if r.kp < start]` (strictly less than)  
+`<=` 사용 시 start_kp가 anchor와 일치하면 anchor 자체가 context 등록 → slice(1,-1)로 시작점 소실.
+
 ---
 
 ## SVG 렌더링 — 선로 오프셋

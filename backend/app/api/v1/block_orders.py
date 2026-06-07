@@ -45,8 +45,12 @@ def _rail_route_id_from_legacy_route(db: Session, route_id: int | None) -> int |
     route = db.query(Route).filter(Route.id == route_id).first()
     if not route:
         return None
+    # 정확한 이름 매칭 우선
+    exact = db.query(RailRoute.id).filter(RailRoute.name == route.name).scalar()
+    if exact:
+        return exact
+    # fallback: 변형 후보 (limit 1 — 중복 방지)
     candidates = [
-        route.name,
         route.name.replace(" (KTX)", ""),
         route.name.replace("고속선", "선"),
     ]
@@ -54,6 +58,7 @@ def _rail_route_id_from_legacy_route(db: Session, route_id: int | None) -> int |
         db.query(RailRoute.id)
         .filter(RailRoute.name.in_(candidates))
         .order_by(RailRoute.id)
+        .limit(1)
         .scalar()
     )
 

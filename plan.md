@@ -1,6 +1,6 @@
 # 개발 계획
 
-> 마지막 갱신: 2026-06-07 (tc10~tc13 마이그레이션 완료 · 차단명령 등록 폼 전면 개선)
+> 마지막 갱신: 2026-06-08 (전차선 단전 렌더링 수정 · 역구내 route type 추가 · T번호 상하선 판정 수정)
 
 ---
 
@@ -27,6 +27,11 @@
 | 기준정보 자동 동기화 | 역/KP 관리 저장 시 rail_baseline_points station_center 자동 UPSERT + geometry 재계산 |
 | 전기시설물 오프셋 표시 | GPS 방향 벡터 기반 facilityOffsetPoint — 최외방 선로 1간격 외방 배치, 2복선·3복선 getTrackCountAtKp 적용, 레이블 name+station_type 대문자 표시 |
 | **차단명령 등록 폼 전면 개선** | 5개 섹션(기본정보·작업구간및일시·투입장비·작업관계자·안전관리), 인라인 1행 레이아웃, SearchableSelect(노선·변전소), 작업선로 단순 버튼, 전차선단전 상시 표시 |
+| **역구내 route type 추가** | routeType: 'line'\|'yard'\|'depot' (역간/역구내/기지 3선택), 역구내 선택 시 역/구역명 텍스트입력 + TrackMultiSelect, KP 선택사항 |
+| **TrackMultiSelect 개선** | "전체" 레이블 제거 → 3개 이하 이름 표시, 4개 이상 "N선 선택", 기지 모드도 전차선 단전 섹션 표시 |
+| **전차선 단전 KP 범위 수정** | `_rail_kp_range_coords` context anchor `kp <= start` → `kp < start` (시작점 자신이 context로 들어가 렌더링에서 소실되는 버그 수정) |
+| **T번호 상하선 판정 수정** | `isUpTrack`/`trackNameToIndex`에 T-트랙 처리 추가 — T1·T3 하선, T2·T4 상선, 중심→외측 배치 |
+| **팝업 전차선 단전 표시** | 블록 상세팝업에 `전차선 단전` 행 추가 (start_rail_facility_id 있는 경우, 초록색) |
 
 ---
 
@@ -165,5 +170,22 @@
 - **BLOCK_TYPES 변경**: `['선로차단', '선로일시사용중지', '열차사이 차단', '보호지구 작업']`
   - ⚠️ `'보호지구 작업'`(공백 포함) ↔ 렌더링 코드 `'보호지구작업'`(공백 없음) 불일치 → 추후 통일 필요
   - ⚠️ `'열차사이 차단'`은 백엔드 VALID_BLOCK_TYPES 및 렌더링 규칙에 없는 신규 값 → 추후 추가 필요
-- **작업선로**: 일반선은 [상선][하선][상하선][역구내] 버튼 단순 선택, 고속선은 T1~T8 체크박스 유지
-- **전차선 단전**: 차단종류와 무관하게 항상 표시, 노선 선택 시 변전소 목록 자동 로드
+- **작업선로**: 일반선 역간 = [상선][하선][상하선] 버튼, 역구내·고속선·2복선+ = TrackMultiSelect
+- **전차선 단전**: 역간·역구내·기지 모두 표시, 노선 선택 시 변전소 목록 자동 로드
+
+### 역구내 route type 추가 (2026-06-08)
+- **결정**: `RouteType = 'line' | 'yard' | 'depot'` (역간/역구내/기지)
+- **역구내 UI**: 역/구역명 텍스트입력 + TrackMultiSelect 다중선택 + KP 선택사항 (없으면 지도 미표시)
+- **저장**: `route_id` 유지 (노선 소속), `track_name` = 역/구역명, `tracks` = 선택 선로
+- **기존 데이터 감지**: `track_name && route_id` → 역구내, `rail_route_id && !route_id` → 기지
+
+### 전차선 단전 KP 범위 버그 수정 (2026-06-08)
+- **원인**: `_rail_kp_range_coords`에서 context anchor 조건 `kp <= start` → 시작 KP가 정확히 anchor와 일치하면 anchor 자체가 context로 등록 → frontend `buildOffsetPath` slice(1,-1) 처리 시 실제 시작점 소실
+- **수정**: `kp < start` (strictly less than) — context anchor는 반드시 시작점 직전 anchor
+- **영향**: 모든 block type(선로차단·전차선단전 등)에 동일 적용
+
+### T번호 상하선 판정 수정 (2026-06-08)
+- **원인**: `isUpTrack` 함수가 'T'로 시작하는 이름을 처리하지 못해 T2(상1)가 하선으로 판정 → T1, T2 모두 동일 하선 위치에 겹쳐 렌더링
+- **수정**: `isUpTrack`: T-트랙이면 짝수=상선(true), 홀수=하선(false)
+- **수정**: `trackNameToIndex`: T번호→배열 인덱스 공식 = 상선 `half-pos`, 하선 `half+pos-1` (half=trackCount/2, pos=ceil(n/2))
+- **검증**: T1(tc=2)→idx1(하선✓), T2(tc=2)→idx0(상선✓), T1(tc=4)→idx2(하1✓), T4(tc=4)→idx0(상2✓)

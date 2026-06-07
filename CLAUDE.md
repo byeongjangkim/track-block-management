@@ -215,6 +215,27 @@ KP가 겹치지 않는 블록은 항상 lane=0 (선로 위 직접 표시).
 //       동일 +1.0 SVG 오프셋을 적용해도 선로 밖으로 이탈함.
 ```
 
+**⚠️ context anchor 조건**: `before_rows = [r for r in rows if r.kp < start]` — **strictly less than** 필수.  
+`<=` 사용 시 시작 KP가 anchor와 정확히 일치할 때 anchor 자체가 context로 들어가
+frontend `slice(1,-1)`에서 실제 시작 좌표가 제거되어 단전구간 시작점이 다음 anchor로 밀림.
+
+### ❻-2 T번호 상하선 판정 (`RailwayMap.tsx`)
+
+```typescript
+// isUpTrack: T-트랙은 짝수=상선, 홀수=하선
+if (trackName.startsWith('T')) {
+  const n = parseInt(trackName.slice(1));
+  return !isNaN(n) && n % 2 === 0;
+}
+
+// trackNameToIndex: T-트랙 → 배열 인덱스
+// pos = Math.ceil(n/2)  →  T1,T2→1, T3,T4→2, T5,T6→3
+// 상선: half - pos     →  T2(tc=2): 1-1=0✓, T2(tc=4): 2-1=1✓, T4: 2-2=0✓
+// 하선: half + pos - 1 →  T1(tc=2): 1+1-1=1✓, T1(tc=4): 2+1-1=2✓, T3: 2+2-1=3✓
+```
+
+**⚠️ `isUpTrack`/`trackNameToIndex`에 T-트랙 분기 없으면** T2(상선)가 하선 위치에 겹쳐 렌더링됨.
+
 ### ❼ 줌 배율별 레이어 전환
 
 | zoom | 표시 |
@@ -487,6 +508,11 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 
 홀수=하선, 짝수=상선, 중심에서 외측 방향으로 번호 증가.  
 일반선/고속선 구분 없이 동일 필드에 저장, 입력 폼은 고속선 선택 시 T번호 표시.
+
+**렌더링 인덱스 매핑**: `trackOffsetsSvg` 배열에서 상선은 앞쪽(음수 오프셋), 하선은 뒤쪽(양수 오프셋).
+- T번호 → 인덱스: `pos = ceil(n/2)`, `half = trackCount/2`
+  - 상선: `half - pos` (T2,tc=2→0, T2,tc=4→1, T4,tc=4→0)
+  - 하선: `half + pos - 1` (T1,tc=2→1, T1,tc=4→2, T3,tc=4→3)
 
 ---
 

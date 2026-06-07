@@ -25,14 +25,35 @@ const WORK_TYPES  = [
   { value: '기계', label: '기계작업', desc: '건설기계관리법 상 건설기계' },
 ];
 const IMPLEMENTERS = ['철도공사', '철도공단', '외부'];
-// 작업선로 단순 선택 (일반선 전용)
-const SIMPLE_TRACKS = ['상선', '하선', '상하선', '역구내'] as const;
+// 작업선로 단순 선택 (일반 복선 역간 전용 — 역구내는 별도 routeType)
+const SIMPLE_TRACKS = ['상선', '하선', '상하선'] as const;
 type SimpleTrack = typeof SIMPLE_TRACKS[number];
-// 전차선단전 단전구간 선택
-const CATENARY_DIRS = ['상선', '하선', '상하선'] as const;
-type CatenaryDir = typeof CATENARY_DIRS[number] | '';
 
-type RouteType = 'line' | 'depot';
+type TrackOption = { value: string; label: string; isUp: boolean };
+
+/** 노선 선로 수·고속선 여부에 따른 선택 옵션 생성 */
+function getTrackOptions(trackCount: number, isHighSpeed: boolean): TrackOption[] {
+  if (isHighSpeed) {
+    return Array.from({ length: trackCount }, (_, i) => {
+      const n = i + 1;
+      const t = `T${n}`;
+      return { value: t, label: T_TRACK_LABEL[t] ?? t, isUp: n % 2 === 0 };
+    });
+  }
+  if (trackCount === 1) return [{ value: '상선', label: '상선', isUp: true }];
+  if (trackCount >= 4) {
+    const half = trackCount / 2;
+    const up: TrackOption[] = Array.from({ length: half }, (_, i) => ({ value: `상${i + 1}`, label: `상${i + 1}`, isUp: true }));
+    const dn: TrackOption[] = Array.from({ length: half }, (_, i) => ({ value: `하${i + 1}`, label: `하${i + 1}`, isUp: false }));
+    return [...up, ...dn];
+  }
+  return [
+    { value: '상선', label: '상선', isUp: true },
+    { value: '하선', label: '하선', isUp: false },
+  ];
+}
+
+type RouteType = 'line' | 'yard' | 'depot';
 function today() { return new Date().toISOString().slice(0, 10); }
 
 const EMPTY: BlockOrderCreate = {
@@ -111,15 +132,13 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
     }
   );
 
-  const [routeType, setRouteType] = useState<RouteType>(() =>
-    initial?.rail_route_id && !initial?.route_id ? 'depot' : 'line'
-  );
+  const [routeType, setRouteType] = useState<RouteType>(() => {
+    if (initial?.rail_route_id && !initial?.route_id) return 'depot';
+    if (initial?.track_name && initial?.route_id) return 'yard';
+    return 'line';
+  });
   const isDepot = routeType === 'depot';
-
-  // 역구내 모드 (상선+하선으로 저장되나 UI상 별도 표시)
-  const [isYardWork, setIsYardWork] = useState(false);
-  // 전차선단전 단전구간 방향
-  const [catenaryDir, setCatenaryDir] = useState<CatenaryDir>('');
+  const isYard = routeType === 'yard';
 
   useEffect(() => {
     if (!initial && !isDepot && routes.length > 0 && form.route_id === 0)
@@ -135,16 +154,29 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
 
   const substationsRouteId = isDepot ? undefined : (form.route_id || undefined);
   const substationsRailRouteId = isDepot ? (form.rail_route_id || undefined) : undefined;
-  // 전차선단전 섹션이 항상 표시되므로 노선이 선택되면 변전소 목록 로드
+  // 역간·역구내·기지 모두 변전소 목록 로드 (기지도 전차선 단전 표시)
   const { data: substations = [] } = useQuery({
     queryKey: ['rail-substations', substationsRouteId, substationsRailRouteId],
     queryFn: () => fetchRailSubstations({ route_id: substationsRouteId, rail_route_id: substationsRailRouteId }),
-    enabled: !isDepot && (!!substationsRouteId || !!substationsRailRouteId),
+    enabled: !!substationsRouteId || !!substationsRailRouteId,
     staleTime: 60_000,
   });
 
   const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  // 전차선단전 단전 선로 목록 (section_note에 [T1,T2] 형식으로 인코딩)
+  const [catenaryTracks, setCatenaryTracks] = useState<string[]>(() => {
+    if (!initial?.section_note || (!initial.start_rail_facility_id && !initial.start_facility_id)) return [];
+    const bm = initial.section_note.match(/\[([^\]]+)\]/);
+    if (bm) return bm[1].split(',').map(t => t.trim()).filter(Boolean);
+    const pm = initial.section_note.match(/\(([^)]+)\)/);
+    if (!pm) return [];
+    const dir = pm[1].trim();
+    if (dir === '상선') return ['상선'];
+    if (dir === '하선') return ['하선'];
+    return ['상선', '하선'];
+  });
 
   function set<K extends keyof BlockOrderCreate>(key: K, value: BlockOrderCreate[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -158,9 +190,8 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
     return '저장 중 오류가 발생했습니다.';
   }
 
-  // 작업선로 단순 선택 (일반선)
+  // 작업선로 단순 선택 (복선 역간 전용)
   function getSimpleTrack(): SimpleTrack | null {
-    if (isYardWork) return '역구내';
     const t = form.tracks as string[];
     if (t.length === 1 && t[0] === '상선') return '상선';
     if (t.length === 1 && t[0] === '하선') return '하선';
@@ -168,25 +199,24 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
     return null;
   }
   function setSimpleTrack(mode: SimpleTrack) {
-    setIsYardWork(mode === '역구내');
     switch (mode) {
       case '상선':   setForm(f => ({ ...f, tracks: ['상선'] as TrackName[] })); break;
       case '하선':   setForm(f => ({ ...f, tracks: ['하선'] as TrackName[] })); break;
       case '상하선': setForm(f => ({ ...f, tracks: ['상선', '하선'] as TrackName[] })); break;
-      case '역구내': setForm(f => ({ ...f, tracks: ['상선', '하선'] as TrackName[] })); break;
     }
   }
 
-  // 전차선단전 section_note 자동 구성
+  // 전차선단전 section_note 자동 구성 — "[T1,T2]" 또는 "[상선,하선]" 형식
   function buildSectionNote(
     startId: number | null | undefined,
     endId: number | null | undefined,
-    dir: CatenaryDir,
+    tracks: string[],
   ): string {
     const startSub = substations.find(s => s.id === startId);
     const endSub   = substations.find(s => s.id === endId);
     if (!startSub || !endSub) return form.section_note ?? '';
-    return `${startSub.name}~${endSub.name}${dir ? ` (${dir})` : ''}`;
+    const trackStr = tracks.length > 0 ? ` [${tracks.join(',')}]` : '';
+    return `${startSub.name}~${endSub.name}${trackStr}`;
   }
 
   function handlePdfSelected(e: React.ChangeEvent<HTMLInputElement>) {
@@ -221,12 +251,21 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault(); setError('');
-    if (isDepot) { if (!form.rail_route_id) { setError('기지를 선택하세요.'); return; } }
-    else {
+    if (isDepot) {
+      if (!form.rail_route_id) { setError('기지를 선택하세요.'); return; }
+    } else {
       if (form.route_id === 0) { setError('노선을 선택하세요.'); return; }
-      if (form.start_km === null || form.start_km === undefined) { setError('시작KP를 입력하세요.'); return; }
-      if (form.end_km === null || form.end_km === undefined) { setError('종료KP를 입력하세요.'); return; }
-      if (form.start_km >= form.end_km) { setError('종료KP는 시작KP보다 커야 합니다.'); return; }
+      if (!isYard) {
+        if (form.start_km === null || form.start_km === undefined) { setError('시작KP를 입력하세요.'); return; }
+        if (form.end_km === null || form.end_km === undefined) { setError('종료KP를 입력하세요.'); return; }
+        if (form.start_km >= form.end_km) { setError('종료KP는 시작KP보다 커야 합니다.'); return; }
+      } else if (
+        form.start_km !== null && form.start_km !== undefined &&
+        form.end_km !== null && form.end_km !== undefined &&
+        form.start_km >= form.end_km
+      ) {
+        setError('종료KP는 시작KP보다 커야 합니다.'); return;
+      }
     }
     if (!form.work_supervisor.trim()) { setError('작업책임자를 입력하세요.'); return; }
     if (!form.safety_manager.trim()) { setError('철도운행안전관리자를 입력하세요.'); return; }
@@ -235,7 +274,7 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
       ...form,
       route_id: isDepot ? null : form.route_id,
       rail_route_id: form.rail_route_id,
-      track_name: isDepot ? (form.track_name?.trim() || null) : null,
+      track_name: (isDepot || isYard) ? (form.track_name?.trim() || null) : null,
       start_km: isDepot ? null : form.start_km,
       end_km:   isDepot ? null : form.end_km,
       start_facility_id: null, end_facility_id: null,
@@ -439,12 +478,17 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
                 />
               )}
               <button type="button"
-                onClick={() => { setRouteType('line'); setForm((f) => ({ ...f, rail_route_id: null, track_name: null, tracks: ['하선'] as TrackName[] })); setIsYardWork(false); }}
-                className={`px-2.5 py-0.5 text-xs rounded border font-medium shrink-0 transition-colors ${!isDepot ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
-                본선
+                onClick={() => { setRouteType('line'); setForm((f) => ({ ...f, rail_route_id: null, track_name: null, tracks: ['하선'] as TrackName[] })); }}
+                className={`px-2.5 py-0.5 text-xs rounded border font-medium shrink-0 transition-colors ${routeType === 'line' ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
+                역간
               </button>
               <button type="button"
-                onClick={() => { setRouteType('depot'); setForm((f) => ({ ...f, route_id: 0, start_km: null, end_km: null, tracks: ['상선', '하선'] as TrackName[] })); setIsYardWork(false); }}
+                onClick={() => { setRouteType('yard'); setForm((f) => ({ ...f, rail_route_id: null, start_km: null, end_km: null })); }}
+                className={`px-2.5 py-0.5 text-xs rounded border font-medium shrink-0 transition-colors ${routeType === 'yard' ? 'bg-purple-600 text-white border-purple-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
+                역구내
+              </button>
+              <button type="button"
+                onClick={() => { setRouteType('depot'); setForm((f) => ({ ...f, route_id: 0, start_km: null, end_km: null, tracks: ['상선', '하선'] as TrackName[] })); }}
                 className={`px-2.5 py-0.5 text-xs rounded border font-medium shrink-0 transition-colors ${isDepot ? 'bg-orange-600 text-white border-orange-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
                 기지
               </button>
@@ -459,17 +503,17 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
               </select>
             </Row>
 
-            {/* 기지 선로/구역명 */}
-            {isDepot && (
+            {/* 역구내/기지 선로·구역명 */}
+            {(isDepot || isYard) && (
               <Row>
-                <L w="w-16">선로/구역명</L>
+                <L w="w-16">{isYard ? '역/구역명' : '선로/구역명'}</L>
                 <input type="text" value={form.track_name ?? ''} onChange={(e) => set('track_name', e.target.value || null)}
-                  placeholder="예: 유치선1, 검수선A, 전체" className={`${SI} flex-1`} />
+                  placeholder={isYard ? '예: 수원역구내, 서울역 3번홈' : '예: 유치선1, 검수선A, 전체'} className={`${SI} flex-1`} />
               </Row>
             )}
 
-            {/* 작업구간: 역간 (시작역 ~ 종료역) */}
-            {!isDepot && (
+            {/* 작업구간: 역간 전용 (시작역 ~ 종료역) */}
+            {!isDepot && !isYard && (
               <Row>
                 <L w="w-16">작업구간</L>
                 <input type="text" value={form.start_station_name ?? ''} onChange={(e) => set('start_station_name', e.target.value)}
@@ -480,46 +524,33 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
               </Row>
             )}
 
-            {/* 작업선로 + KP: 고속선=T번호 체크박스 / 일반선=간단 버튼 */}
+            {/* 작업선로 + KP: 역구내·고속선·2복선+=셀렉터 / 복선 역간=간단 버튼 */}
             {!isDepot && (
               <Row>
                 <L w="w-16">작업선로 *</L>
-                {isHighSpeed ? (
-                  // 고속선: T번호 체크박스
-                  <div className="flex flex-wrap gap-x-2 gap-y-1">
-                    {HIGH_SPEED_TRACKS.map(track => {
-                      const checked = (form.tracks as TrackName[]).includes(track);
-                      return (
-                        <label key={track} className="flex items-center gap-1 cursor-pointer select-none">
-                          <input type="checkbox" checked={checked} onChange={(e) => {
-                            const cur = form.tracks as TrackName[];
-                            if (e.target.checked) set('tracks', [...cur, track]);
-                            else { const next = cur.filter(t => t !== track); if (next.length > 0) set('tracks', next); }
-                          }} className="rounded" />
-                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${trackColor(track, checked)}`}>
-                            {T_TRACK_LABEL[track] ?? track}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                {(isYard || isHighSpeed || (selectedRoute?.default_track_count ?? 2) >= 4) ? (
+                  // 역구내·고속선·2복선+: 드롭다운 다중선택
+                  <TrackMultiSelect
+                    options={getTrackOptions(selectedRoute?.default_track_count ?? 2, isHighSpeed)}
+                    value={form.tracks as string[]}
+                    onChange={(tracks) => set('tracks', tracks as TrackName[])}
+                  />
                 ) : (
-                  // 일반선: 상선/하선/상하선/역구내 버튼
+                  // 복선 역간: 상선/하선/상하선 버튼
                   <>
                     {SIMPLE_TRACKS.map((mode) => {
                       const isActive = getSimpleTrack() === mode;
                       return (
                         <button key={mode} type="button" onClick={() => setSimpleTrack(mode)}
                           className={`px-2.5 py-0.5 text-xs rounded border font-medium transition-colors ${
-                            isActive
-                              ? mode === '역구내' ? 'bg-purple-600 text-white border-purple-600' : 'bg-blue-600 text-white border-blue-600'
-                              : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                            isActive ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
                           }`}>{mode}</button>
                       );
                     })}
                   </>
                 )}
                 <span className="w-px h-4 bg-gray-200 shrink-0 mx-0.5" />
+                {isYard && <span className="text-xs text-gray-400 shrink-0">(KP 선택)</span>}
                 <span className="text-xs text-gray-500 shrink-0">시작</span>
                 <input type="number" step="0.1" min="0"
                   value={form.start_km ?? ''}
@@ -538,44 +569,46 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
               </Row>
             )}
 
-            {/* 전차선 단전 — 항상 표시 (본선 작업 시) */}
-            {!isDepot && (
-              <Row>
-                <L w="w-16">전차선 단전</L>
-                {substations.length > 0 ? (
-                  <>
-                    <SearchableSelect
-                      options={substations}
-                      value={form.start_rail_facility_id}
-                      onChange={(id) => setForm(f => ({ ...f, start_rail_facility_id: id, section_note: buildSectionNote(id, f.end_rail_facility_id, catenaryDir) }))}
-                      placeholder="변전소(시작) 검색..."
-                      getLabel={(s) => `${s.name}${s.detail_category ? ` (${s.detail_category})` : ''} ${s.kp}km`}
-                      className="flex-1"
-                    />
-                    <span className="text-xs text-gray-400 shrink-0">~</span>
-                    <SearchableSelect
-                      options={substations}
-                      value={form.end_rail_facility_id}
-                      onChange={(id) => setForm(f => ({ ...f, end_rail_facility_id: id, section_note: buildSectionNote(f.start_rail_facility_id, id, catenaryDir) }))}
-                      placeholder="변전소(종료) 검색..."
-                      getLabel={(s) => `${s.name}${s.detail_category ? ` (${s.detail_category})` : ''} ${s.kp}km`}
-                      className="flex-1"
-                    />
-                  </>
-                ) : (
-                  <span className="text-xs text-gray-400 italic">{form.route_id ? '이 노선의 변전설비 없음' : '노선 선택 후 로드됩니다'}</span>
-                )}
-                <L w="w-14">단전구간</L>
-                <select value={catenaryDir} onChange={(e) => {
-                  const dir = e.target.value as CatenaryDir;
-                  setCatenaryDir(dir);
-                  setForm(f => ({ ...f, section_note: buildSectionNote(f.start_rail_facility_id, f.end_rail_facility_id, dir) }));
-                }} className={`${SI} w-24`}>
-                  <option value="">선택</option>
-                  {CATENARY_DIRS.map(d => <option key={d}>{d}</option>)}
-                </select>
-              </Row>
-            )}
+            {/* 전차선 단전 — 역간·역구내·기지 모두 표시 */}
+            <Row>
+              <L w="w-16">전차선 단전</L>
+              {substations.length > 0 ? (
+                <>
+                  <SearchableSelect
+                    options={substations}
+                    value={form.start_rail_facility_id}
+                    onChange={(id) => setForm(f => ({ ...f, start_rail_facility_id: id, section_note: buildSectionNote(id, f.end_rail_facility_id, catenaryTracks) }))}
+                    placeholder="변전소(시작) 검색..."
+                    getLabel={(s) => `${s.name}${s.detail_category ? ` (${s.detail_category})` : ''} ${s.kp}km`}
+                    className="flex-1"
+                  />
+                  <span className="text-xs text-gray-400 shrink-0">~</span>
+                  <SearchableSelect
+                    options={substations}
+                    value={form.end_rail_facility_id}
+                    onChange={(id) => setForm(f => ({ ...f, end_rail_facility_id: id, section_note: buildSectionNote(f.start_rail_facility_id, id, catenaryTracks) }))}
+                    placeholder="변전소(종료) 검색..."
+                    getLabel={(s) => `${s.name}${s.detail_category ? ` (${s.detail_category})` : ''} ${s.kp}km`}
+                    className="flex-1"
+                  />
+                </>
+              ) : (
+                <span className="text-xs text-gray-400 italic">
+                  {(form.route_id || form.rail_route_id) ? '이 노선의 변전설비 없음' : '노선 선택 후 로드됩니다'}
+                </span>
+              )}
+              <L w="w-14">단전구간</L>
+              <TrackMultiSelect
+                options={getTrackOptions(selectedRoute?.default_track_count ?? 2, isHighSpeed)}
+                value={catenaryTracks}
+                onChange={(tracks) => {
+                  setCatenaryTracks(tracks);
+                  setForm(f => ({ ...f, section_note: buildSectionNote(f.start_rail_facility_id, f.end_rail_facility_id, tracks) }));
+                }}
+                allowEmpty
+                className="w-32"
+              />
+            </Row>
 
             {/* 작업 일시 */}
             <Row>
@@ -744,6 +777,83 @@ function L({ w = 'w-20', children }: { w?: string; children: React.ReactNode }) 
 }
 
 const SI = 'border rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400';
+
+// ── 다중선택 선로 셀렉터 ──────────────────────────────────────────────────────
+function TrackMultiSelect({
+  options,
+  value,
+  onChange,
+  allowEmpty = false,
+  className = '',
+}: {
+  options: TrackOption[];
+  value: string[];
+  onChange: (tracks: string[]) => void;
+  allowEmpty?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function toggle(v: string) {
+    if (value.includes(v)) {
+      const next = value.filter(t => t !== v);
+      if (next.length > 0 || allowEmpty) onChange(next);
+    } else {
+      onChange([...value, v]);
+    }
+  }
+
+  const label =
+    value.length === 0 ? '없음' :
+    value.length <= 3 ? value.join(', ') :
+    `${value.length}선 선택`;
+
+  return (
+    <div className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        className={`${SI} flex items-center gap-1 min-w-[80px] w-full`}
+      >
+        <span className="flex-1 text-left text-xs truncate">{label}</span>
+        <span className="text-gray-400 text-[10px] shrink-0">▾</span>
+      </button>
+      {open && (
+        <div
+          className="absolute z-50 bg-white border border-gray-200 rounded shadow-lg p-2 min-w-max"
+          style={{ top: '100%', left: 0 }}
+        >
+          <div className="space-y-0.5 max-h-48 overflow-y-auto">
+            {options.map(opt => {
+              const checked = value.includes(opt.value);
+              return (
+                <label key={opt.value} className="flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer hover:bg-gray-50 select-none">
+                  <input type="checkbox" checked={checked} onChange={() => toggle(opt.value)} className="rounded" />
+                  <span className={`text-xs font-medium ${opt.isUp ? 'text-blue-700' : 'text-orange-700'}`}>
+                    {opt.label}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="border-t mt-1 pt-1 flex gap-2">
+            <button type="button" className="text-[10px] text-blue-600 hover:underline"
+              onMouseDown={(e) => { e.preventDefault(); onChange(options.map(o => o.value)); }}>
+              전체선택
+            </button>
+            {allowEmpty && value.length > 0 && (
+              <button type="button" className="text-[10px] text-gray-500 hover:underline"
+                onMouseDown={(e) => { e.preventDefault(); onChange([]); }}>
+                전체해제
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── 검색형 콤보박스 ────────────────────────────────────────────────────────────
 // 항목이 많은 노선·변전소 등 — 텍스트 검색이 기본, 전체 목록은 포커스 시 드롭다운으로 보조
