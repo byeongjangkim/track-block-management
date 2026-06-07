@@ -1,7 +1,12 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1 import admin, auth, block_orders, documents, facilities, map, organizations, projects, rail_reference, routes, settings, stats, users
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="선로차단작업 관리 API",
@@ -18,6 +23,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """미처리 예외를 JSON 500으로 변환 — CORS 미들웨어가 헤더를 추가할 수 있도록 한다."""
+    logger.exception("Unhandled exception: %s %s", request.method, request.url)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"서버 내부 오류: {type(exc).__name__}"},
+    )
 
 # 라우터 등록
 PREFIX = "/api/v1"

@@ -261,6 +261,11 @@ def create_block_order(
         if current_user.role == "system_superuser" and body.organization_id is not None
         else current_user.organization_id
     )
+    if org_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="organization_id가 지정되지 않았습니다 (system_superuser는 organization_id 필수)",
+        )
 
     order = BlockOrder(
         **{k: v for k, v in data.items() if k != "organization_id"},
