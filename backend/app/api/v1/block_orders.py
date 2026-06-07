@@ -179,6 +179,7 @@ def _assert_can_register(
         end_km=end_kp,
         request_field=field,
         db=db,
+        rail_route_id=rail_route_id,
     )
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)

@@ -26,6 +26,7 @@ def can_register_block_order(
     end_km: float | None,
     request_field: str,
     db: Session,
+    rail_route_id: int | None = None,
 ) -> tuple[bool, str]:
     """
     Returns:
@@ -52,13 +53,16 @@ def can_register_block_order(
     if start_km is None or end_km is None:
         return True, ""
 
-    # 3) 구간 검증 — 사용자 분야에 맞는 관할 구간 조회
+    # 3) 구간 검증 — 사용자 분야에 맞는 관할 구간 조회 (rail_route_id 기준)
     #    우선순위: 분야별 구간 → 없으면 'all' 구간 fallback
+    if rail_route_id is None:
+        return False, "관할구간 검증용 노선 정보가 없습니다 (rail_route_id 미설정)"
+
     target_field = user_field if (user_field and user_field != "all") else "all"
 
     ranges = db.query(OrganizationRouteRange).filter_by(
         organization_id=user.organization_id,
-        route_id=route_id,
+        rail_route_id=rail_route_id,
         field=target_field,
     ).all()
 
@@ -66,7 +70,7 @@ def can_register_block_order(
     if not ranges and target_field != "all":
         ranges = db.query(OrganizationRouteRange).filter_by(
             organization_id=user.organization_id,
-            route_id=route_id,
+            rail_route_id=rail_route_id,
             field="all",
         ).all()
 

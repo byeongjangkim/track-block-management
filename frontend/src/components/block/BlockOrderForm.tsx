@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createBlockOrder, updateBlockOrder, parsePdfForBlockOrder } from '../../api/blockOrders';
+import { createBlockOrder, updateBlockOrder, uploadDocumentToDb } from '../../api/blockOrders';
 import { fetchRoutes } from '../../api/routes';
 import { fetchOrganizations } from '../../api/organizations';
 import { fetchDepotRoutes, fetchRailSubstations } from '../../api/map';
@@ -13,7 +13,6 @@ import type { AxiosError } from 'axios';
 interface Props {
   initial?: BlockOrder;
   initialValues?: Partial<BlockOrderCreate>;
-  lowConfidence?: boolean;
   onClose: () => void;
 }
 
@@ -38,7 +37,7 @@ function today() { return new Date().toISOString().slice(0, 10); }
 
 const EMPTY: BlockOrderCreate = {
   route_id: 0, rail_route_id: null, tracks: ['하선'] as TrackName[], track_name: null,
-  start_km: 0, end_km: 0, section_note: '',
+  start_km: null, end_km: null, section_note: '',
   start_facility_id: null, end_facility_id: null, start_rail_facility_id: null, end_rail_facility_id: null,
   danger_level: null, parent_id: null, equipment_name: '', speed_restriction: null,
   speed_restriction_note: '', catenary_protection: null, zep: '', zcp: '', cpt: '', tzep: '',
@@ -52,7 +51,7 @@ const EMPTY: BlockOrderCreate = {
   start_station_name: '', end_station_name: '', project_id: null, reason: '', note: '',
 };
 
-export default function BlockOrderForm({ initial, initialValues, lowConfidence, onClose }: Props) {
+export default function BlockOrderForm({ initial, initialValues, onClose }: Props) {
   const qc = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const isSuperuser = user?.role === 'system_superuser';
@@ -77,7 +76,7 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
   const [form, setForm] = useState<BlockOrderCreate>(() =>
     initial ? {
       route_id: initial.route_id, organization_id: initial.organization_id ?? undefined,
-      tracks: initial.tracks, start_km: initial.start_km ?? 0, end_km: initial.end_km ?? 0,
+      tracks: initial.tracks, start_km: initial.start_km ?? null, end_km: initial.end_km ?? null,
       section_note: initial.section_note ?? '', start_facility_id: initial.start_facility_id ?? null,
       end_facility_id: initial.end_facility_id ?? null,
       start_rail_facility_id: initial.start_rail_facility_id ?? null,
@@ -144,16 +143,19 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
     staleTime: 60_000,
   });
 
-  const [isParsing, setIsParsing] = useState(false);
-  const [parsedLowConf, setParsedLowConf] = useState(lowConfidence ?? false);
+  const [pendingPdfFile, setPendingPdfFile] = useState<File | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
 
   function set<K extends keyof BlockOrderCreate>(key: K, value: BlockOrderCreate[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
   function extractError(err: unknown): string {
-    const ae = err as AxiosError<{ detail: string }>;
-    return ae?.response?.data?.detail ?? '저장 중 오류가 발생했습니다.';
+    const ae = err as AxiosError<{ detail: string | Array<{ loc: string[]; msg: string }> }>;
+    const d = ae?.response?.data?.detail;
+    if (!d) return `저장 중 오류가 발생했습니다. (HTTP ${ae?.response?.status ?? '?'})`;
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(e => `${e.loc.slice(-1)[0]}: ${e.msg}`).join(' / ');
+    return '저장 중 오류가 발생했습니다.';
   }
 
   // 작업선로 단순 선택 (일반선)
@@ -187,55 +189,28 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
     return `${startSub.name}~${endSub.name}${dir ? ` (${dir})` : ''}`;
   }
 
-  async function handlePdfSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]; if (!file) return;
-    e.target.value = ''; setIsParsing(true);
-    try {
-      const result = await parsePdfForBlockOrder(file);
-      if (result.error) { setError(`PDF 파싱 오류: ${result.error}`); return; }
-      const matched = routes.find((r) => result.route_name
-        ? r.name.includes(result.route_name) || result.route_name.includes(r.name) : false);
-      setForm((f) => ({
-        ...f,
-        ...(matched ? { route_id: matched.id } : {}),
-        ...(result.tracks ? { tracks: result.tracks } : {}),
-        ...(result.start_km != null ? { start_km: result.start_km } : {}),
-        ...(result.end_km != null ? { end_km: result.end_km } : {}),
-        ...(result.work_date ? { work_date: result.work_date } : {}),
-        ...(result.start_time ? { start_time: result.start_time } : {}),
-        ...(result.end_time ? { end_time: result.end_time } : {}),
-        ...(result.field ? { field: result.field } : {}),
-        ...(result.block_type ? { block_type: result.block_type } : {}),
-        ...(result.dept_head ? { dept_head: result.dept_head } : {}),
-        ...(result.dept_head_phone ? { dept_head_phone: result.dept_head_phone } : {}),
-        ...(result.work_supervisor ? { work_supervisor: result.work_supervisor } : {}),
-        ...(result.work_supervisor_phone ? { work_supervisor_phone: result.work_supervisor_phone } : {}),
-        ...(result.safety_manager ? { safety_manager: result.safety_manager } : {}),
-        ...(result.safety_manager_phone ? { safety_manager_phone: result.safety_manager_phone } : {}),
-        ...(result.electric_safety_manager ? { electric_safety_manager: result.electric_safety_manager } : {}),
-        ...(result.electric_safety_manager_phone ? { electric_safety_manager_phone: result.electric_safety_manager_phone } : {}),
-        ...(result.contractor ? { contractor: result.contractor } : {}),
-        ...(result.contractor_phone ? { contractor_phone: result.contractor_phone } : {}),
-        ...(result.project_name ? { project_name: result.project_name } : {}),
-        ...(result.approved_date ? { approved_date: result.approved_date } : {}),
-        ...(result.block_method ? { block_method: result.block_method } : {}),
-        ...(result.start_station_name ? { start_station_name: result.start_station_name } : {}),
-        ...(result.end_station_name ? { end_station_name: result.end_station_name } : {}),
-        ...(result.zep ? { zep: result.zep } : {}),
-        ...(result.zcp ? { zcp: result.zcp } : {}),
-        ...(result.cpt ? { cpt: result.cpt } : {}),
-        ...(result.tzep ? { tzep: result.tzep } : {}),
-        ...(result.train_watcher ? { train_watcher: result.train_watcher } : {}),
-        ...(result.train_watcher_phone ? { train_watcher_phone: result.train_watcher_phone } : {}),
-      }));
-      setParsedLowConf(result.confidence < 0.6); setError('');
-    } catch { setError('PDF 분석 중 오류가 발생했습니다.'); }
-    finally { setIsParsing(false); }
+  function handlePdfSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = '';
+    setPendingPdfFile(file);
   }
 
   const createMut = useMutation({
     mutationFn: createBlockOrder,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['block-orders'] }); onClose(); },
+    onSuccess: async (created) => {
+      if (pendingPdfFile) {
+        try {
+          await uploadDocumentToDb(pendingPdfFile, { orderId: created.id, docNo: created.doc_no ?? undefined });
+        } catch {
+          // PDF 업로드 실패는 저장 성공 후 별도 안내
+          setError('차단명령이 등록되었으나 PDF 첨부에 실패했습니다. 목록에서 다시 첨부하세요.');
+          qc.invalidateQueries({ queryKey: ['block-orders'] });
+          return;
+        }
+      }
+      qc.invalidateQueries({ queryKey: ['block-orders'] });
+      onClose();
+    },
     onError: (err) => setError(extractError(err)),
   });
   const updateMut = useMutation({
@@ -249,7 +224,9 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
     if (isDepot) { if (!form.rail_route_id) { setError('기지를 선택하세요.'); return; } }
     else {
       if (form.route_id === 0) { setError('노선을 선택하세요.'); return; }
-      if ((form.start_km ?? 0) >= (form.end_km ?? 0)) { setError('종료KP는 시작KP보다 커야 합니다.'); return; }
+      if (form.start_km === null || form.start_km === undefined) { setError('시작KP를 입력하세요.'); return; }
+      if (form.end_km === null || form.end_km === undefined) { setError('종료KP를 입력하세요.'); return; }
+      if (form.start_km >= form.end_km) { setError('종료KP는 시작KP보다 커야 합니다.'); return; }
     }
     if (!form.work_supervisor.trim()) { setError('작업책임자를 입력하세요.'); return; }
     if (!form.safety_manager.trim()) { setError('철도운행안전관리자를 입력하세요.'); return; }
@@ -320,24 +297,25 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
         <div className="px-5 py-2.5 border-b flex items-center justify-between shrink-0">
           <h2 className="font-semibold text-sm">{initial ? '차단명령 수정' : '차단명령 등록'}</h2>
           <div className="flex items-center gap-2">
-            {!initial && (
-              <>
-                <button type="button" onClick={() => pdfInputRef.current?.click()} disabled={isParsing}
-                  className="px-3 py-1 text-xs border rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">
-                  {isParsing ? 'PDF 분석 중...' : '시행문 PDF 불러오기'}
-                </button>
-                <input ref={pdfInputRef} type="file" accept="application/pdf" className="hidden" onChange={handlePdfSelected} />
-              </>
-            )}
+            <>
+              {pendingPdfFile && (
+                <span className="text-xs text-blue-600 max-w-[140px] truncate" title={pendingPdfFile.name}>
+                  {pendingPdfFile.name}
+                </span>
+              )}
+              <button type="button" onClick={() => pdfInputRef.current?.click()}
+                className="px-3 py-1 text-xs border rounded-lg text-gray-600 hover:bg-gray-50">
+                {pendingPdfFile ? 'PDF 변경' : '근거문서 PDF 첨부'}
+              </button>
+              {pendingPdfFile && (
+                <button type="button" onClick={() => setPendingPdfFile(null)}
+                  className="text-xs text-red-400 hover:text-red-600">✕</button>
+              )}
+              <input ref={pdfInputRef} type="file" accept="application/pdf" className="hidden" onChange={handlePdfSelected} />
+            </>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
           </div>
         </div>
-
-        {parsedLowConf && (
-          <div className="px-5 py-1.5 bg-amber-50 border-b border-amber-200 text-amber-700 text-xs">
-            일부 필드를 인식하지 못했습니다. 내용을 확인 후 저장하세요.
-          </div>
-        )}
 
         <form onSubmit={handleSubmit} className="overflow-y-auto flex-1 px-5 py-3 space-y-3">
 
@@ -543,11 +521,19 @@ export default function BlockOrderForm({ initial, initialValues, lowConfidence, 
                 )}
                 <span className="w-px h-4 bg-gray-200 shrink-0 mx-0.5" />
                 <span className="text-xs text-gray-500 shrink-0">시작</span>
-                <input type="number" step="0.1" min="0" value={form.start_km ?? 0} onChange={(e) => set('start_km', Number(e.target.value))}
-                  className={`${SI} w-20`} required />
+                <input type="number" step="0.1" min="0"
+                  value={form.start_km ?? ''}
+                  onChange={(e) => set('start_km', e.target.value === '' ? null : Number(e.target.value))}
+                  onFocus={(e) => e.target.select()}
+                  placeholder="0.0"
+                  className={`${SI} w-20`} />
                 <span className="text-xs text-gray-500 shrink-0">km  종료</span>
-                <input type="number" step="0.1" min="0" value={form.end_km ?? 0} onChange={(e) => set('end_km', Number(e.target.value))}
-                  className={`${SI} w-20`} required />
+                <input type="number" step="0.1" min="0"
+                  value={form.end_km ?? ''}
+                  onChange={(e) => set('end_km', e.target.value === '' ? null : Number(e.target.value))}
+                  onFocus={(e) => e.target.select()}
+                  placeholder="0.0"
+                  className={`${SI} w-20`} />
                 <span className="text-xs text-gray-500 shrink-0">km</span>
               </Row>
             )}
