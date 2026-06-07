@@ -13,6 +13,7 @@ def _enrich_route(route: Route, db: Session) -> RouteResponse:
     """rail_routes에서 default_track_count를 조회해 RouteResponse를 구성."""
     rail = db.query(RailRoute).filter(RailRoute.name == route.name).first()
     track_count = rail.default_track_count if rail else 2
+    line_type = rail.line_type if rail else None
     data = {
         "id": route.id,
         "code": route.code,
@@ -24,6 +25,7 @@ def _enrich_route(route: Route, db: Session) -> RouteResponse:
         "up_direction": route.up_direction,
         "down_direction": route.down_direction,
         "default_track_count": track_count,
+        "line_type": line_type,
     }
     return RouteResponse(**data)
 
