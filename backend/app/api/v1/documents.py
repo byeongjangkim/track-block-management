@@ -3,13 +3,15 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db, require_org_admin
 from app.models.block_order import BlockOrder
+from app.models.block_order_document import BlockOrderDocument
 from app.models.user import User
+from app.schemas.block_order import BlockOrderDocumentResponse
 from app.services.pdf_parser_service import (
     parse_block_order_pdf,
     parse_cover_pdf,
@@ -134,3 +136,98 @@ def download_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="파일을 찾을 수 없습니다")
 
     return FileResponse(path=file_path, media_type="application/pdf", filename=safe_name)
+
+
+# ── DB 저장 방식 (PostgreSQL BYTEA) ──────────────────────────────────────────
+
+@router.post("/db/upload", response_model=BlockOrderDocumentResponse)
+async def upload_document_to_db(
+    file: UploadFile,
+    order_id: Optional[int] = Form(None),
+    doc_no: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    승인원문 PDF를 PostgreSQL BYTEA에 저장한다.
+    order_id가 주어지면 해당 block_order.document_id를 자동 연결한다.
+    """
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="PDF 파일만 업로드할 수 있습니다")
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="파일 크기는 20MB 이하여야 합니다")
+
+    doc = BlockOrderDocument(
+        doc_no=doc_no,
+        original_filename=file.filename or "document.pdf",
+        file_data=content,
+        file_size=len(content),
+        content_type="application/pdf",
+        uploaded_by=current_user.id,
+        note=note,
+    )
+    db.add(doc)
+    db.flush()  # id 획득
+
+    if order_id is not None:
+        order = db.query(BlockOrder).filter(BlockOrder.id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="차단명령을 찾을 수 없습니다")
+        order.document_id = doc.id
+
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+@router.get("/db/{doc_id}/info", response_model=BlockOrderDocumentResponse)
+def get_document_info(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """메타데이터만 반환 (파일 바이너리 제외)."""
+    doc = db.query(BlockOrderDocument).filter(BlockOrderDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="문서를 찾을 수 없습니다")
+    return doc
+
+
+@router.get("/db/{doc_id}/view")
+def view_document_from_db(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """PDF 바이너리를 스트림으로 반환 (브라우저에서 직접 열기)."""
+    doc = db.query(BlockOrderDocument).filter(BlockOrderDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="문서를 찾을 수 없습니다")
+    headers = {
+        "Content-Disposition": f'inline; filename="{doc.original_filename}"',
+        "Content-Length": str(len(doc.file_data)),
+    }
+    return Response(content=doc.file_data, media_type="application/pdf", headers=headers)
+
+
+@router.delete("/db/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document_from_db(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_org_admin),
+):
+    """DB에서 PDF 삭제. 연결된 block_orders.document_id는 SET NULL."""
+    doc = db.query(BlockOrderDocument).filter(BlockOrderDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="문서를 찾을 수 없습니다")
+    db.delete(doc)
+    db.commit()

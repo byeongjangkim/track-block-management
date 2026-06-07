@@ -1,4 +1,5 @@
-from datetime import date, time
+from datetime import date, datetime, time
+from typing import Optional
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -12,18 +13,20 @@ VALID_TRACKS = {
 }
 
 # 유효한 block_type 목록
+# ※ '선로일시사용중지'와 '선로차단'은 서로 다른 공식 명칭으로 원문 명칭을 그대로 보존한다.
 VALID_BLOCK_TYPES = {
-    '대표명령',       # 상위 작업 계획 (parent_id=NULL)
-    '선로차단',       # 노선 위 직접 표시 (장비/인력/기계 모두)
-    '전차선단전',     # 변전소간 전차선 단전 (녹색, 노선 위)
-    '작업구간설정',   # 차단 없는 인력/기계 이격 표시 (최외방 +0.5×gap)
-    '보호지구작업',   # 선로 30m 이내 작업 (최외방 +1.0×gap, 사각형 해칭)
+    '대표명령',           # 상위 작업 계획 (parent_id=NULL)
+    '선로차단',           # 노선 위 직접 표시 (장비/인력/기계 모두)
+    '선로일시사용중지',   # 세부내역 문서에서 사용하는 공식 명칭 (선로차단과 동일 렌더링)
+    '전차선단전',         # 변전소간 전차선 단전 (녹색, 노선 위)
+    '작업구간설정',       # 차단 없는 인력/기계 이격 표시 (최외방 +0.5×gap)
+    '보호지구작업',       # 선로 30m 이내 작업 (최외방 +1.0×gap, 사각형 해칭)
     '임시완속',
     '속도제한',
 }
 
-# block_type 중 선로차단 및 전차선단전에 해당하는 것들
-TRACK_BLOCK_TYPES = {'선로차단', '전차선단전'}
+# block_type 중 선로차단 계열 (노선 위 직접 렌더링)
+TRACK_BLOCK_TYPES = {'선로차단', '선로일시사용중지', '전차선단전'}
 
 
 class BlockOrderCreate(BaseModel):
@@ -92,6 +95,7 @@ class BlockOrderCreate(BaseModel):
     electric_safety_manager: str | None = None
     electric_safety_manager_phone: str | None = None
     contractor: str | None = None
+    contractor_phone: str | None = None       # 시공사 연락처
     train_watcher: str | None = None
     train_watcher_phone: str | None = None
     reason: str | None = None
@@ -111,6 +115,17 @@ class BlockOrderCreate(BaseModel):
     cpt:  str | None = None   # 작업자 보호조치 CPT (고속선)
     tzep: str | None = None   # 작업자 보호조치 TZEP (고속선)
     worker_count: int | None = None  # 작업자 수
+    # tc11 추가
+    document_id:    int | None  = None   # 승인원문 PDF ID
+    project_name:   str | None  = None   # 관련사업명
+    approved_date:  date | None = None   # 승인일자
+    block_method:   str | None  = None   # 차단방법 (SS/SSS 등)
+    # tc12 추가
+    start_station_name: str | None = None   # 차단구간 시작역/지점명
+    end_station_name:   str | None = None   # 차단구간 종료역/지점명
+    # tc13 추가
+    project_id: int | None = None           # projects.id FK
+    reason:     str | None = None           # 작업내용/시행사항
     note: str | None = None
 
 
@@ -147,6 +162,7 @@ class BlockOrderUpdate(BaseModel):
     electric_safety_manager: str | None = None
     electric_safety_manager_phone: str | None = None
     contractor: str | None = None
+    contractor_phone: str | None = None
     train_watcher: str | None = None
     train_watcher_phone: str | None = None
     reason: str | None = None
@@ -163,6 +179,14 @@ class BlockOrderUpdate(BaseModel):
     cpt:  str | None = None
     tzep: str | None = None
     worker_count: int | None = None
+    document_id:   int | None  = None
+    project_name:  str | None  = None
+    approved_date: date | None = None
+    block_method:  str | None  = None
+    start_station_name: str | None = None
+    end_station_name:   str | None = None
+    project_id: int | None = None
+    reason:     str | None = None
     note: str | None = None
 
     @field_validator("tracks")
@@ -214,6 +238,7 @@ class BlockOrderResponse(BaseModel):
     electric_safety_manager: str | None
     electric_safety_manager_phone: str | None
     contractor: str | None
+    contractor_phone: str | None
     train_watcher: str | None
     train_watcher_phone: str | None
     reason: str | None
@@ -231,6 +256,17 @@ class BlockOrderResponse(BaseModel):
     tzep: str | None
     worker_count: int | None
     document_path: str | None
+    # tc11 추가
+    document_id:   int | None
+    project_name:  str | None
+    approved_date: date | None
+    block_method:  str | None
+    # tc12 추가
+    start_station_name: str | None
+    end_station_name:   str | None
+    # tc13 추가
+    project_id: int | None = None
+    reason:     str | None = None
     note: str | None
     created_by: int
 
@@ -243,5 +279,38 @@ class BlockOrderResponse(BaseModel):
             return json.loads(v)
         return v
 
+
+    model_config = {"from_attributes": True}
+
+
+# ── 승인원문 PDF 문서 스키마 ──────────────────────────────────────────────────
+
+class BlockOrderDocumentResponse(BaseModel):
+    id:                int
+    doc_no:            str | None
+    original_filename: str
+    file_size:         int | None
+    content_type:      str
+    uploaded_at:       datetime
+    uploaded_by:       int | None
+    note:              str | None
+
+    model_config = {"from_attributes": True}
+
+
+# ── 열차감시원 스키마 ─────────────────────────────────────────────────────────
+
+class BlockOrderMonitorCreate(BaseModel):
+    name:    str
+    phone:   str | None = None
+    company: str | None = None
+
+
+class BlockOrderMonitorResponse(BaseModel):
+    id:             int
+    block_order_id: int
+    name:           str
+    phone:          str | None
+    company:        str | None
 
     model_config = {"from_attributes": True}

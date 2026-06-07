@@ -220,7 +220,6 @@ class RailFacilityManagementOffice(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False)
-    region_name: Mapped[str] = mapped_column(String(100), nullable=False)
     office_name: Mapped[str] = mapped_column(String(100), nullable=False)
     office_type: Mapped[str] = mapped_column(String(30), nullable=False, default="사업소")
     field: Mapped[str] = mapped_column(String(20), nullable=False, default="all")

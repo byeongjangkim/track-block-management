@@ -20,6 +20,10 @@ organizations
   ├── org_viewport                  지역본부 초기 지도 뷰포트
   ├── organization_route_ranges     관할 담당구역 (→ rail_routes FK)
   └── block_orders ─── routes(legacy) · rail_routes
+        ├── block_order_documents   승인원문 PDF 첨부 (BYTEA)
+        └── block_order_monitors    열차감시원 복수 명단
+
+projects                            공사/사업 테이블 (block_orders.project_id FK)
 
 system_settings                     색상·지도 설정 (24개)
 ```
@@ -50,6 +54,16 @@ system_settings                     색상·지도 설정 (24개)
 | `cpt` | TEXT | 작업자 보호조치 CPT 코드 (고속선) |
 | `tzep` | TEXT | 작업자 보호조치 TZEP 코드 (고속선) |
 | `worker_count` | INTEGER | 작업자 수 |
+| `document_id` | INTEGER | FK → block_order_documents.id (승인원문 PDF, NULL 허용) |
+| `project_name` | TEXT | 관련 사업명 자유 텍스트 (projects 미연결 시 직접 기입용) |
+| `approved_date` | DATE | 승인일자 |
+| `block_method` | TEXT | 차단방법 (SS/SSS 등) |
+| `contractor_phone` | TEXT | 시공사 연락처 |
+| `start_station_name` | TEXT | 차단구간 시작역명 |
+| `end_station_name` | TEXT | 차단구간 종료역명 |
+| `project_id` | INTEGER | FK → projects.id (ON DELETE SET NULL) |
+| `reason` | TEXT | 작업내용/시행사항 |
+| `note` | TEXT | 비고 |
 
 **선로 이름 체계**:
 
@@ -71,6 +85,59 @@ system_settings                     색상·지도 설정 (24개)
   └─ 작업구간설정 (parent_id=N)
 ```
 API: `GET /api/v1/block-orders/{id}/children`
+
+### `projects`
+
+공사/사업 마스터 테이블. block_orders와 N:1 관계 (block_orders.project_id FK).
+
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `id` | INTEGER | PK |
+| `organization_id` | INTEGER | FK → organizations.id (NULL 허용) |
+| `rail_route_id` | INTEGER | FK → rail_routes.id (NULL 허용) |
+| `name` | TEXT | 공사/사업명 (필수) |
+| `project_type` | TEXT | 공사 / 용역 / 사업 |
+| `field` | TEXT | 시설 / 전기 / 건축 (NULL 허용) |
+| `implementer` | TEXT | 철도공사 / 철도공단 / 외부 |
+| `contractor` | TEXT | 시공사명 (NULL 허용) |
+| `contract_number` | TEXT | 계약번호 (NULL 허용) |
+| `start_date` | DATE | 사업 시작일 (NULL 허용) |
+| `end_date` | DATE | 사업 종료일 (NULL 허용) |
+| `status` | TEXT | 진행중(기본) / 완료 / 중단 |
+| `description` | TEXT | 사업 설명 (NULL 허용) |
+| `created_by` | INTEGER | FK → users.id |
+| `created_at` | TIMESTAMP | 생성 시각 (UTC) |
+
+API: `GET /api/v1/projects/` · `POST /api/v1/projects/` · `GET /api/v1/projects/lookup/by-name`  
+⚠️ FastAPI 라우터 등록 순서: `/lookup/by-name`(static) → `/{project_id}`(parameterized) — 역순이면 422 오류
+
+### `block_order_documents`
+
+승인원문 PDF 첨부 테이블. block_orders.document_id FK.
+
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `id` | INTEGER | PK |
+| `doc_no` | TEXT | 문서번호 |
+| `original_filename` | TEXT | 원본 파일명 |
+| `data` | BYTEA | PDF 바이너리 |
+| `file_size` | INTEGER | 파일 크기 (bytes) |
+| `content_type` | TEXT | MIME 타입 (기본: application/pdf) |
+| `uploaded_at` | TIMESTAMP | 업로드 시각 (UTC) |
+| `uploaded_by` | INTEGER | FK → users.id (NULL 허용) |
+| `note` | TEXT | 비고 (NULL 허용) |
+
+### `block_order_monitors`
+
+열차감시원 복수 명단. 1개 차단명령 → N명 감시원.
+
+| 컬럼 | 타입 | 비고 |
+|---|---|---|
+| `id` | INTEGER | PK |
+| `block_order_id` | INTEGER | FK → block_orders.id |
+| `name` | TEXT | 성명 (필수) |
+| `phone` | TEXT | 연락처 (NULL 허용) |
+| `company` | TEXT | 소속 (NULL 허용) |
 
 ### `organizations`
 
@@ -98,7 +165,7 @@ API: `GET /api/v1/block-orders/{id}/children`
 
 ### `rail_baseline_points`
 
-KP 보간의 원천 데이터.
+KP 보간의 원천 데이터. 노선도 렌더링과 차단구간 KP 보간의 실제 사용 테이블.
 
 | point_type | 용도 | center_only 모드 |
 |---|---|---|
@@ -108,6 +175,18 @@ KP 보간의 원천 데이터.
 | `facility_end` | 터널·교량 종점 | ✅ 포함 (본선 위) |
 | `station_yard_start` | 역 구내 진입로 | ❌ 제외 (곡선 유발) |
 | `station_yard_end` | 역 구내 출구 | ❌ 제외 (곡선 유발) |
+
+**`rail_route_station_points` ↔ `rail_baseline_points` 자동 동기화**  
+`PATCH /api/v1/rail-reference/station-points/{id}` 저장 시 자동 처리:
+
+| 조건 | 처리 |
+|---|---|
+| `is_baseline_anchor=True` + GPS(lat/lon) + KP 모두 존재, station_center 없음 | `rail_baseline_points` station_center **INSERT** |
+| `is_baseline_anchor=True` + GPS + KP 모두 존재, station_center 있음 | kp·lat·lon 및 플래그 **UPDATE** |
+| `is_baseline_anchor=False`, station_center 있음 | `is_interpolation_anchor=FALSE`, `is_render_anchor=FALSE` |
+| 위 조건 해당 시 공통 | KP 순서 재정렬(seq) + `rail_computed_geometry` 재계산 자동 실행 |
+
+⚠️ `rail_route_station_points`에 GPS를 저장해도 `rail_baseline_points`에 `station_center` 레코드가 없으면 노선도에 반영되지 않는다.
 
 ### `rail_computed_geometry`
 
@@ -141,7 +220,7 @@ alembic upgrade head
 
 # 현재 버전 확인
 alembic current
-# → tc09_block_order_parent
+# → tc13_projects
 ```
 
 | revision | 내용 |
@@ -155,6 +234,10 @@ alembic current
 | tc07 | organizations.sort_order |
 | tc08 | block_orders: catenary_protection / ZEP·ZCP·CPT·TZEP / worker_count |
 | tc09 | block_orders: parent_id / equipment_name / speed_restriction[_note] |
+| tc10 | rail_facility_management_offices.region_name 컬럼 제거 |
+| tc11 | block_order_documents(PDF BYTEA) · block_order_monitors · block_orders: document_id / project_name / approved_date / block_method / contractor_phone |
+| tc12 | block_orders: start_station_name / end_station_name |
+| tc13 | projects 테이블 신설 · block_orders.project_id FK |
 
 ---
 

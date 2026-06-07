@@ -17,6 +17,7 @@ import RouteMasterPage from './pages/RouteMasterPage';
 import StationKpAdminPage from './pages/StationKpAdminPage';
 import BaselineValidationPage from './pages/BaselineValidationPage';
 import SystemSettingsPage from './pages/SystemSettingsPage';
+import HelpPage from './pages/HelpPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -39,10 +40,11 @@ function AuthHydrator() {
         .catch(() => clearAuth());
     }
     // 로그인 상태이면 시스템 설정 로드 (지도 색상 반영)
+    // token을 deps에 포함: 신규 로그인 시(null→값) loadSettings 재호출
     if (token) {
       loadSettings();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -76,6 +78,9 @@ export default function App() {
             <Route path="region-boundaries" element={<OrgRangesAdminPage />} />
             <Route path="baseline-validation" element={<BaselineValidationPage />} />
           </Route>
+
+          {/* 도움말 (모든 로그인 사용자) */}
+          <Route path="/help" element={<RequireAuth><HelpPage /></RequireAuth>} />
 
           {/* 시스템 관리 (superuser) */}
           <Route path="/admin/users"     element={<RequireAuth><UsersAdminPage /></RequireAuth>} />

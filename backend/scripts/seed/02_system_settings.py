@@ -14,7 +14,7 @@ SETTINGS = [
     # (category, key, value, default_value, label, sort_order)
     # 노선 색상
     ('route_colors', 'highway',         '#dc2626', '#dc2626', '고속선',        1),
-    ('route_colors', 'electrified',     '#f97316', '#f97316', '일반선 전철화',  2),
+    ('route_colors', 'electrified',     '#000000', '#000000', '일반선 전철화',  2),
     ('route_colors', 'non_electrified', '#9ca3af', '#9ca3af', '일반선 비전철',  3),
     ('route_colors', 'catenary_cut',    '#16a34a', '#16a34a', '전차선단전',     4),
     # 차단 색상

@@ -54,18 +54,41 @@ KP 범위 → 좌표 목록.
 
 ## SVG 렌더링 — 선로 오프셋
 
+`TRACK_HALF_GAP_SVG = 0.5` 기준 (k ≥ 3에서 복선 분리 시작):
+
 ```typescript
 // 선로 오프셋 (SVG 단위, zoom 무관)
+// TRACK_HALF_GAP_SVG = 0.5
 trackOffsetsSvg(trackCount):
-  복선(2): [-1.0, +1.0]
-  2복선(4): [-3.0, -1.0, +1.0, +3.0]
-  3복선(6): [-5.0, -3.0, -1.0, +1.0, +3.0, +5.0]
+  단선(1): [0]
+  복선(2): [-0.5, +0.5]
+  2복선(4): [-1.5, -0.5, +0.5, +1.5]
+  3복선(6): [-2.5, -1.5, -0.5, +0.5, +1.5, +2.5]
 ```
 
 - 상선 계열: 음수 오프셋 (SVG 기준 위쪽)
 - 하선 계열: 양수 오프셋 (SVG 기준 아래쪽)
+- **복선 분리 시작**: `showMultiTrack = k >= 3` — k < 3에서는 단일 중심선 표시
 
-### Stroke Soft Cap
+줌 배율별 상하선 중심간격 (px):
+
+| k | 3 | 5 | 7 | 10 | 15 | 20 | 25 |
+|---|---|---|---|---|---|---|---|
+| 간격(px) | 3 | 5 | 7 | 10 | 15 | 20 | 25 |
+
+### 노선 선 두께
+
+노선 선로는 `capStrokeSvg` 미사용 — 별도 함수로 화면 픽셀을 선형 증가 후 고정:
+
+```typescript
+// 화면 픽셀 목표: min(1.6, 0.4 + 0.2×k)
+// SVG 단위 = 목표픽셀 / k  (zoom transform이 ×k 배율 적용)
+routeStrokeWidthSvg(k) = min(1.6, 0.4 + 0.2×k) / k
+
+// k=2: 0.8px | k=3: 1.0px | k=4: 1.2px | k=5: 1.4px | k≥6: 1.6px 고정
+```
+
+### Stroke Soft Cap (기타 레이어)
 
 ```typescript
 // k≤capZoom: 자연 성장, k>capZoom: 화면 픽셀 고정
@@ -73,7 +96,8 @@ capStrokeSvg(svgVal, k, capZoom) = svgVal * min(1, capZoom/k)
 ```
 
 capZoom 기본값=5 (시스템 설정에서 조정).  
-zoom handler에서 모든 railway 레이어에 적용 — **새 레이어 추가 시 반드시 적용**.
+zoom handler에서 차단구간·전차선단전·관할구간 등에 적용 — **새 레이어 추가 시 반드시 적용**.  
+노선 선로(`path.route-computed`)는 `routeStrokeWidthSvg(k)` 사용.
 
 ---
 
@@ -100,3 +124,74 @@ API: `GET /api/v1/map/sigungu?level=2`
 | ZOOM_STATION2 = 3 | 보통역·무인역·신호장·신호소 |
 | ZOOM_SEGMENT = 3 | 구조물 LineString (터널·교량) |
 | ZOOM_DETAIL = 8 | 변전소·건널목·분기 |
+
+---
+
+## 전기시설물 오프셋 표시 (`facilityOffsetPoint`)
+
+변전소(`type='변전소'`)는 실제 GPS 위치 대신 **최외방 선로 1간격 외방 고정 위치**에 표시.
+
+### 적용 조건
+
+- `type === '변전소'` 이고 `direction` 값이 있으며 `direction !== '상하선'`인 경우만 오프셋 적용
+- `direction='상하선'`: 좌우 방향 결정 불가 → GPS 위치 유지
+
+### 알고리즘 3단계
+
+```
+① 선로 중심선 KP 보간 (center_only 앵커 사용)
+   routeCoords 배열에서 시설물 KP를 감싸는 브래킷(lo, hi) 탐색
+   t = (kp - kpA) / (kpB - kpA)
+   cLon = lonA + t*(lonB-lonA),  cLat = latA + t*(latB-latA)
+   → D3 proj([cLon, cLat]) = center (SVG 좌표)
+
+② GPS → 선로 중심 방향 벡터 산출
+   gpsPos = proj([gpsLon, gpsLat])
+   vx = gpsPos[0] - center[0]
+   vy = gpsPos[1] - center[1]
+   dist = √(vx²+vy²)
+   (GPS가 실제 선로 측에 입력되므로 방향 벡터가 자동으로 선로 외방을 가리킴)
+
+③ 최외방 선로 외방으로 배치
+   targetDist = trackCount × TRACK_HALF_GAP_SVG
+   display = center + (vx,vy)/dist × targetDist
+```
+
+### 선로 수별 표시 거리
+
+| 선로 수 | 최외방 선로 오프셋 | targetDist (SVG) |
+|---|---|---|
+| 단선(1) | ±0 | **0.5** |
+| 복선(2) | ±0.5 | **1.0** |
+| 2복선(4) | ±1.5 | **2.0** |
+| 3복선(6) | ±2.5 | **3.0** |
+
+### KP별 선로 수 결정 (`getTrackCountAtKp`)
+
+```typescript
+// rail_track_sections 구간 내에 있으면 해당 track_count 반환
+// 없으면 rail_routes.default_track_count 반환
+function getTrackCountAtKp(kp, defaultCount, sections): number
+```
+
+데이터 소스:
+- `routeCoordsMapRef`: `allRailGeo` feature geometry (center_only 앵커 좌표 배열)
+- `routeTrackCountMapRef`: `allRailGeo` feature `default_track_count`
+- `routeTrackSectionsMapRef`: `allRailGeo` feature `track_sections` (KP 구간별 선로 수)
+
+모두 `GET /api/v1/map/rail-routes/all/geometry?station_mode=center_only` 응답에서 채움.
+
+### 레이블 형식
+
+```
+name + station_type.toUpperCase()
+예: "익산PP", "금곡SSP", "소하SP", "갈매신호기계실"
+```
+
+툴팁은 기존 형식 유지: `"sp 소하 / 경부고속선 19.264km"`
+
+### 주의사항
+
+- `dist < 1e-3` (GPS ≈ 선로 중심): 오프셋 적용 불가 → GPS 위치 유지
+- `routeCoords`는 center_only 모드(역 중심+터널교량 경계)만 사용 → 역 간격이 긴 곡선 구간에서 미세 위치 오차 가능 (방향 판별은 정확)
+- 구현 위치: `_updateFacilityVisibility(k)` 함수 내 (줌 변경마다 재계산)

@@ -82,14 +82,18 @@ function computedRouteStroke(
 //   zoom transform 이 모든 요소를 균일하게 스케일링하므로
 //   SVG 단위로 표현하면 non-scaling-stroke / 수동 /k 변환 없이 자동 일관성 달성
 //
-// 도출 근거 (실측):
-//   TRACK_HALF_GAP_SVG=1.0 → k=1.5에서 3px, k=3에서 6px, k=5에서 10px
-//   → 차단정보 시인성 확보 줌(k≥3)에서 선로 분리가 명확하고,
-//     전국 조망(k≤1)에서는 자연스럽게 보이지 않아 지도가 산만하지 않음
+// 도출 근거:
+//   TRACK_HALF_GAP_SVG=0.5 → 상하선 중심간격 = 1.0×k px (선형 비례)
+//   k=3에서 3px(복선 분리 시작), k=10에서 10px, k=20에서 20px
+//   → 전국 조망(k<3)에서 단선 표시, 지역 조망(k≥3)에서 복선 분리
+//
+// 줌 배율별 상하선 중심간격(px):
+//   k=3: 3.0px | k=4: 4.0px | k=5: 5.0px | k=7: 7.0px
+//   k=10: 10px | k=15: 15px | k=20: 20px | k=25: 25px
 
 /** SVG 월드 단위 상수 — 모든 railway 레이어가 이 값 기준으로 스케일 */
-const TRACK_HALF_GAP_SVG  = 1.0;   // 선로 반간격 (복선: 상선=−1.0, 하선=+1.0)
-const ROUTE_STROKE_SVG    = 0.4;   // 노선 중심선 두께
+const TRACK_HALF_GAP_SVG  = 0.5;   // 선로 반간격 (복선: 상선=−0.5, 하선=+0.5)
+const ROUTE_STROKE_SVG    = 0.4;   // 노선 중심선 두께 (zoom handler에서 동적 조정)
 const BLOCK_STROKE_SVG    = ROUTE_STROKE_SVG * 2;  // 선로차단 선 두께 = 노선의 2배 (0.8)
 const CATENARY_STROKE_SVG = 1.0;   // 전차선단전 선 두께
 const LANE_GAP_SVG        = 0.3;   // 병행 레인 간격
@@ -109,6 +113,17 @@ const ORG_BOUNDARY_SVG    = 3.0;   // 관할구간 선 두께
  */
 function capStrokeSvg(svgVal: number, k: number, capZoom: number): number {
   return svgVal * Math.min(1, capZoom / k);
+}
+
+/**
+ * 노선 선로 선 두께 (SVG 단위, zoom k 기반).
+ * 화면 픽셀 목표: min(1.6, 0.4 + 0.2×k)
+ *   k=2: 0.8px | k=3: 1.0px | k=4: 1.2px | k=5: 1.4px | k≥6: 1.6px(고정)
+ * SVG 단위 = 목표픽셀 / k (zoom transform 이 ×k 배율 적용하므로)
+ */
+function routeStrokeWidthSvg(k: number): number {
+  const safeK = Math.max(k, 0.01);
+  return Math.min(1.6, 0.4 + 0.2 * safeK) / safeK;
 }
 
 /**
@@ -376,6 +391,7 @@ function facilityColor(
   return '#9ca3af';
 }
 
+
 // 방향별 색상 제거 — 방향은 복선 평행선 위치(좌=상선, 우=하선)로만 구분
 // 아래 상수는 컴포넌트 내 파생값(TRACK_BLOCK_COLOR_S 등)으로 대체됨
 
@@ -442,6 +458,84 @@ function segmentMidpoint(coords: [number,number][], projection: d3.GeoProjection
  *   포함해서 반환하므로, 렌더링은 coords[1]~coords[n-2] 구간만 사용한다.
  *   맥락 앵커가 없을 때(2점 이하)는 전체를 사용한다.
  */
+/**
+ * 특정 KP에서의 실제 선로 수 반환.
+ * rail_track_sections에 KP 구간 예외가 있으면 그 값, 없으면 노선 기본값 사용.
+ */
+function getTrackCountAtKp(
+  kp: number,
+  defaultCount: number,
+  sections: {start_kp: number; end_kp: number; track_count: number}[],
+): number {
+  for (const s of sections) {
+    if (s.start_kp <= kp && kp <= s.end_kp) return s.track_count;
+  }
+  return defaultCount;
+}
+
+/**
+ * 전기시설물(변전소·신호기계실·통신실 등) 표시 위치 계산.
+ *
+ * GPS 좌표가 실제 선로 측에 입력되어 있으므로, 선로 중심(KP 보간) → GPS 간
+ * 방향 벡터를 그대로 사용하여 최외방 선로 1간격 외방에 표시.
+ * direction 필드의 부호 체계에 의존하지 않으므로 방향 역전 문제가 없음.
+ *
+ * targetDist = trackCount × TRACK_HALF_GAP_SVG (최외방 선로 외측 1간격):
+ *   단선(1): 0.5  복선(2): 1.0  2복선(4): 2.0  3복선(6): 3.0
+ *
+ * @param kp          시설물 KP (km)
+ * @param gpsCoords   시설물 GPS [lon, lat]
+ * @param trackCount  노선 선로 수 (1/2/4/6)
+ * @param routeCoords 노선 좌표 배열 [lon, lat, kp][]
+ * @param proj        D3 geoProjection
+ * @returns SVG [x, y] (오프셋 적용), 계산 불가 시 null
+ */
+function facilityOffsetPoint(
+  kp: number,
+  gpsCoords: [number, number],
+  trackCount: number,
+  routeCoords: [number, number, number][],
+  proj: d3.GeoProjection,
+): [number, number] | null {
+  if (routeCoords.length < 2) return null;
+
+  // kp 전후 브래킷 탐색
+  let lo = 0, hi = routeCoords.length - 1;
+  for (let i = 0; i < routeCoords.length - 1; i++) {
+    if (routeCoords[i][2] <= kp && routeCoords[i + 1][2] >= kp) {
+      lo = i; hi = i + 1; break;
+    }
+  }
+
+  const [lonA, latA, kpA] = routeCoords[lo];
+  const [lonB, latB, kpB] = routeCoords[hi];
+
+  // KP 보간으로 선로 중심선 위 kp 위치 계산
+  let cLon: number, cLat: number;
+  if (kpB === kpA) { cLon = lonA; cLat = latA; }
+  else {
+    const t = Math.max(0, Math.min(1, (kp - kpA) / (kpB - kpA)));
+    cLon = lonA + t * (lonB - lonA);
+    cLat = latA + t * (latB - latA);
+  }
+
+  const center = proj([cLon, cLat]);
+  const gpsPos = proj(gpsCoords);
+  if (!center || !gpsPos) return null;
+
+  // 선로 중심 → GPS 방향 벡터 (GPS가 실제 선로 측에 있으므로 방향이 정확)
+  const vx = gpsPos[0] - center[0];
+  const vy = gpsPos[1] - center[1];
+  const dist = Math.sqrt(vx * vx + vy * vy);
+  if (dist < 1e-3) return null; // GPS가 선로 중심과 거의 일치 → 방향 불확정
+
+  // 최외방 선로 1간격 외방 = trackCount × TRACK_HALF_GAP_SVG
+  //   복선(2)=1.0  2복선(4)=2.0  3복선(6)=3.0  단선(1)=0.5
+  const targetDist = trackCount * TRACK_HALF_GAP_SVG;
+  const scale = targetDist / dist;
+  return [center[0] + vx * scale, center[1] + vy * scale];
+}
+
 function buildOffsetPath(coords:[number,number][], track:string, routeTrackCount:number, projection:d3.GeoProjection, laneIndex=0, blockType=''): string {
   const pts = coords.map(([lon,lat]) => projection([lon,lat])).filter((p): p is [number,number] => p !== null);
   if (pts.length < 2) return '';
@@ -815,6 +909,9 @@ export default function RailwayMap({
   const hiddenLineTypesRef    = useRef<Set<'고속선' | '일반선'>>(new Set());
   // 노선코드 → 선로수 맵 (터널·교량 각 선로 렌더링에 사용)
   const routeTrackCountMapRef = useRef<Map<string, number>>(new Map());
+  // 노선코드 → 고정밀 좌표([lon,lat,kp][]) 맵 (전기시설물 선로 오프셋 계산용)
+  const routeCoordsMapRef        = useRef<Map<string, [number,number,number][]>>(new Map());
+  const routeTrackSectionsMapRef = useRef<Map<string, {start_kp: number; end_kp: number; track_count: number}[]>>(new Map());
   // 단선(zoom<1.5) ↔ 복선(zoom≥1.5) 전환 추적 — 경계 통과 시 풀 리빌드 필요
   const prevShowMultiTrackRef  = useRef(false);
   const selectedBlockIdRef     = useRef<number | null>(null);
@@ -967,10 +1064,10 @@ export default function RailwayMap({
         const k = transform.k;
 
         // 노선 선로 업데이트
-        // ┌─ 단선(zoom<1.5) ↔ 복선(zoom≥1.5) 전환 시: path 수가 달라지므로 풀 리빌드
+        // ┌─ 단선(zoom<3) ↔ 복선(zoom≥3) 전환 시: path 수가 달라지므로 풀 리빌드
         // └─ 동일 모드 내 줌 변경 시: 'd' 속성만 갱신 (DOM 재생성 없음, 효율적)
         if (proj && allRailGeoRef.current) {
-          const showMultiTrack   = k >= 1.5;
+          const showMultiTrack   = k >= 3;
           const thresholdCrossed = showMultiTrack !== prevShowMultiTrackRef.current;
           prevShowMultiTrackRef.current = showMultiTrack;
 
@@ -1053,10 +1150,11 @@ export default function RailwayMap({
             const el = this as SVGGElement;
             return `translate(${el.getAttribute('data-bx')},${el.getAttribute('data-by')}) scale(${1 / k})`;
           });
-        // ── Stroke soft cap (k≤capZoom: 자연 성장, k>capZoom: 화면픽셀 고정) ─
-        const capK = strokeCapZoomRef.current;
+        // ── 선로 두께: 0.4+0.2k px, k≥6에서 1.6px 고정 ─────────────────────
         g.selectAll<SVGPathElement, unknown>('path.route-computed')
-          .attr('stroke-width', capStrokeSvg(ROUTE_STROKE_SVG, k, capK));
+          .attr('stroke-width', routeStrokeWidthSvg(k));
+        // ── 기타 요소 Stroke soft cap (k≤capZoom: 자연 성장, k>capZoom: 화면픽셀 고정) ─
+        const capK = strokeCapZoomRef.current;
         g.selectAll<SVGPathElement, LanedSegment>('path.block-segment')
           .attr('stroke-width', (d) => {
             const style = blockLineStyle(d.properties.block_type, d.properties.work_type);
@@ -1207,7 +1305,24 @@ export default function RailwayMap({
       el.attr('display', visible ? null : 'none');
 
       const coords = (d.geometry as { type: 'Point'; coordinates: [number, number] }).coordinates;
-      const pt = proj(coords);
+      let pt: [number, number] | null = proj(coords);
+
+      // 전기시설물(변전소 type) + direction 있음: GPS→선로중심 벡터 방향으로 외방 표시
+      // '상하선'은 양쪽 선로에 걸쳐 있어 단방향 오프셋 불가 → GPS 위치 유지
+      if (type === '변전소' && d.properties.direction && d.properties.direction !== '상하선') {
+        const routeCoords = routeCoordsMapRef.current.get(d.properties.route_code);
+        if (routeCoords) {
+          const defaultCount = routeTrackCountMapRef.current.get(d.properties.route_code) ?? 2;
+          const sections     = routeTrackSectionsMapRef.current.get(d.properties.route_code) ?? [];
+          // 시설물 KP 위치의 실제 선로 수 (rail_track_sections 우선, 없으면 노선 기본값)
+          const trackCount   = getTrackCountAtKp(d.properties.km, defaultCount, sections);
+          const offsetPt = facilityOffsetPoint(
+            d.properties.km, coords, trackCount, routeCoords, proj,
+          );
+          if (offsetPt) pt = offsetPt;
+        }
+      }
+
       if (pt) el.attr('transform', `translate(${pt[0]},${pt[1]}) scale(${1 / k})`);
     });
 
@@ -1362,9 +1477,9 @@ export default function RailwayMap({
     layer.selectAll('*').remove();
 
     // 각 노선을 KP 구간별로 분할 → 구간마다 선로 수에 따라 평행 path 생성
-    // 전국 조망(zoom<1.5): 단일 중심선만 표시
-    // 지역 이상(zoom≥1.5): 선로 수에 따라 평행선 표시
-    const showMultiTrack = k >= 1.5;
+    // 전국 조망(zoom<3): 단일 중심선만 표시
+    // 지역 이상(zoom≥3): 선로 수에 따라 평행선 표시
+    const showMultiTrack = k >= 3;
 
     interface TrackPath {
       routeId: number;
@@ -1419,14 +1534,14 @@ export default function RailwayMap({
       })
       .attr('fill', 'none')
       .attr('stroke', (d) => computedRouteStroke(d.lineType, d.hasCatenary, routeColorsRef.current))
-      .attr('stroke-width', ROUTE_STROKE_SVG)
+      .attr('stroke-width', routeStrokeWidthSvg(k))
       .attr('display', (d) => d.hidden ? 'none' : null)
       .attr('opacity', (d) => {
         if (!frcNow) return null;
         const match = frcNow instanceof Set ? frcNow.has(d.routeName) : frcNow === d.routeName;
         return match ? null : 0.15;
       });
-  }, [allRailGeo, hiddenLineTypes]);
+  }, [allRailGeo, hiddenLineTypes, routeColors]);
 
   // ── 시군구 배경 레이어 ─────────────────────────────────────────────────
   useEffect(() => {
@@ -1612,6 +1727,11 @@ export default function RailwayMap({
         .attr('opacity', (d) => d.properties.id === selectedBlockId ? 1.0 : 0.85)
         .attr('stroke-linecap', 'butt')
         .style('cursor', 'pointer')
+        .style('filter', (d) =>
+          d.properties.id === selectedBlockId
+            ? 'drop-shadow(0 0 4px rgba(255,255,255,0.95)) drop-shadow(0 0 8px rgba(22,163,74,0.85))'
+            : null
+        )
         .on('click', (event: MouseEvent, d: BlockSegmentFeature) => {
           event.stopPropagation();
           onBlockSegmentClick?.(d.properties.id);
@@ -1675,6 +1795,11 @@ export default function RailwayMap({
       })
       .attr('stroke-linecap', 'butt')
       .style('cursor', 'pointer')
+      .style('filter', (d) =>
+        d.properties.id === selectedBlockId
+          ? 'drop-shadow(0 0 4px rgba(255,255,255,0.95)) drop-shadow(0 0 8px rgba(255,200,0,0.85))'
+          : null
+      )
       .on('click', function(event: MouseEvent, d: LanedSegment) {
         event.stopPropagation();
         onBlockSegmentClick?.(d.properties.id);
@@ -1944,7 +2069,8 @@ export default function RailwayMap({
     badgeLayer.attr('display', k < 1.5 ? null : 'none');
 
   // allRailGeo가 바뀌면(D3 init 재실행 시) 레이어가 재생성되므로 block-segments도 재렌더
-  }, [blockSegments, selectedBlockId, allRailGeo]); // eslint-disable-line react-hooks/exhaustive-deps
+  // routeColors/blockColors/dangerColors: 설정 로드 후 색상 즉시 반영
+  }, [blockSegments, selectedBlockId, allRailGeo, routeColors, blockColors, dangerColors]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 시설물 레이어 ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1964,13 +2090,26 @@ export default function RailwayMap({
     const k    = scaleRef.current;
     const capK = strokeCapZoomRef.current;
 
-    // 노선코드 → 선로수 맵 갱신 (각 선로에 개별 터널·교량 렌더링에 사용)
+    // 노선코드 → 선로수 맵 + 좌표 맵 갱신
     if (allRailGeo) {
-      const map = new Map<string, number>();
+      const countMap  = new Map<string, number>();
+      const coordsMap = new Map<string, [number,number,number][]>();
+      const sectionsMap = new Map<string, {start_kp: number; end_kp: number; track_count: number}[]>();
       for (const feat of allRailGeo.features) {
-        map.set(feat.properties.korail_route_code, feat.properties.default_track_count);
+        const code = feat.properties.korail_route_code;
+        countMap.set(code, feat.properties.default_track_count);
+        // high LOD 우선, 없으면 이미 있는 것 유지
+        if (feat.properties.lod === 'high' || !coordsMap.has(code)) {
+          coordsMap.set(code, feat.geometry.coordinates);
+        }
+        // KP 구간별 선로 수 (rail_track_sections) — 노선별 첫 번째 feature에서만 저장
+        if (!sectionsMap.has(code)) {
+          sectionsMap.set(code, (feat.properties.track_sections as {start_kp: number; end_kp: number; track_count: number}[]) ?? []);
+        }
       }
-      routeTrackCountMapRef.current = map;
+      routeTrackCountMapRef.current    = countMap;
+      routeCoordsMapRef.current        = coordsMap;
+      routeTrackSectionsMapRef.current = sectionsMap;
     }
 
     const isTB = (d: FacilityFeature) =>
@@ -2223,7 +2362,7 @@ export default function RailwayMap({
         .style('pointer-events', 'none')
         .style('user-select', 'none')
         .attr('display', 'none')
-        .text(d.properties.name);
+        .text((d) => d.properties.name + (d.properties.station_type ? d.properties.station_type.toUpperCase() : ''));
     });
 
     _updateFacilityVisibility(scaleRef.current);

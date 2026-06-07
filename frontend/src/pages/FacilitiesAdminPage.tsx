@@ -47,9 +47,9 @@ interface EditRow {
 
 const DIRECTION_LABELS: Record<string, string> = {
   '': '—',
-  UP: '상선',
-  DOWN: '하선',
-  BOTH: '상하선',
+  '상선': '상선',
+  '하선': '하선',
+  '상하선': '상하선',
 };
 
 const MAJOR_COLORS: Record<string, string> = {
@@ -715,7 +715,7 @@ function FacilitiesDetailPage({
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-gray-500 whitespace-nowrap">
-                    {facility.management_office_name ?? facility.management_region_name ?? '—'}
+                    {facility.management_office_name ?? '—'}
                   </td>
                   <td className="px-3 py-2.5 text-xs text-gray-400 max-w-44 truncate">{facility.note ?? ''}</td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
@@ -772,7 +772,7 @@ function EditRow({
                 onChange('classification_id', newId);
                 const cls = classifications.find((c) => c.id === newId);
                 if (cls?.sub_category === '선로출입문') {
-                  onChange('direction', cls.detail_category === '상선' ? 'UP' : 'DOWN');
+                  onChange('direction', cls.detail_category === '상선' ? '상선' : '하선');
                 }
               }}
               className={`${inputCls} mt-1`}

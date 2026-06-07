@@ -103,8 +103,8 @@ D3 geoMercator scale=12180 (Korea 기준):
 
 **SVG 단위 상수** (`RailwayMap.tsx`):
 ```typescript
-TRACK_HALF_GAP_SVG  = 1.0               // 선로 반간격
-ROUTE_STROKE_SVG    = 0.4               // 노선 중심선 두께
+TRACK_HALF_GAP_SVG  = 0.5               // 선로 반간격 (복선: 상선=−0.5, 하선=+0.5)
+ROUTE_STROKE_SVG    = 0.4               // 노선 중심선 두께 기준 (동적 조정 시 routeStrokeWidthSvg 사용)
 BLOCK_STROKE_SVG    = ROUTE_STROKE_SVG * 2  // 차단구간 = 노선의 2배 (0.8)
 CATENARY_STROKE_SVG = 1.0               // 전차선단전
 LANE_GAP_SVG        = 0.3               // 병행 레인 간격
@@ -112,6 +112,25 @@ DANGER_ZONE_SVG     = 8.0               // 위험지구
 PROTECT_ZONE_SVG    = 16.0              // 보호지구
 ORG_BOUNDARY_SVG    = 3.0               // 관할구간
 ```
+
+**노선 선 두께 함수** (`routeStrokeWidthSvg`):  
+노선 선로는 `capStrokeSvg` 대신 별도 함수로 동적 두께를 반환한다.
+```typescript
+// 화면 픽셀 목표: min(1.6, 0.4 + 0.2×k)
+// k=2: 0.8px | k=3: 1.0px | k=4: 1.2px | k=5: 1.4px | k≥6: 1.6px 고정
+function routeStrokeWidthSvg(k): number {
+  return Math.min(1.6, 0.4 + 0.2 * k) / k;
+}
+```
+
+**복선 분리 시작**: `showMultiTrack = k >= 3`  
+k < 3: 상·하선 모두 단일 중심선 표시, k ≥ 3: TRACK_HALF_GAP_SVG 오프셋으로 분리 표시.
+
+줌 배율별 상하선 중심간격 (px):
+
+| k=3 | k=5 | k=7 | k=10 | k=15 | k=20 | k=25 |
+|---|---|---|---|---|---|---|
+| 3px | 5px | 7px | 10px | 15px | 20px | 25px |
 
 ### ❷ Stroke Soft Cap (`strokeCapZoom`)
 
@@ -128,13 +147,15 @@ function capStrokeSvg(svgVal, k, capZoom) {
 - **⚠️ useEffect에서 누락하면**: selectedBlockId 변경 시(클릭/선택해제) 두께가 달라짐
 - **⚠️ 새 레이어 추가 시**: zoom handler AND useEffect 양쪽에 capStrokeSvg 추가 필수
 
-zoom k=5 기준 화면 픽셀:
+capZoom=5 기준 화면 픽셀 (capStrokeSvg 적용 요소):
 
-| 요소 | SVG 단위 | 고정 픽셀 |
+| 요소 | SVG 단위 | k=5 화면 픽셀 |
 |---|---|---|
-| 노선 중심선 | 0.4 | 2px |
+| 노선 중심선 | routeStrokeWidthSvg(k) | k=5: 1.4px / k≥6: 1.6px 고정 |
 | 차단구간 | 0.8 | 4px |
 | 전차선단전 | 1.0 | 5px |
+
+※ 노선 중심선은 `capStrokeSvg` 미사용 — `routeStrokeWidthSvg(k)` 단독 적용.
 
 ### ❸ 레이어 순서 (아래→위)
 
@@ -202,17 +223,61 @@ KP가 겹치지 않는 블록은 항상 lane=0 (선로 위 직접 표시).
 | 1.5 ~ 4 | 선분 + 밴드 |
 | ≥ 4 | 선분 + ◆ 마커 |
 
+**복선 상·하선 분리**: `showMultiTrack = k >= 3`  
+k < 3: 단일 중심선, k ≥ 3: 상·하선 TRACK_HALF_GAP_SVG(0.5) 오프셋으로 분리.
+
 ### ❽ 색상 체계
 
 | 구분 | 기본값 | 설정 키 |
 |---|---|---|
 | 고속선 | `#dc2626` | `route_colors.highway` |
-| 일반선 전철화 | `#f97316` | `route_colors.electrified` |
+| 일반선 전철화 | `#000000` | `route_colors.electrified` |
 | 일반선 비전철 | `#9ca3af` | `route_colors.non_electrified` |
 | 전차선단전 | `#16a34a` | `route_colors.catenary_cut` |
 | 선로차단 | `#ca8a04` | `block_colors.track_block` |
 
 모든 색상은 `system_settings` → `settingsStore` → D3 렌더링 (새로고침 후 반영).
+
+### ❾ 전기시설물 표시 위치 (`facilityOffsetPoint`)
+
+변전소·신호기계실·통신실 등(`type='변전소'`)은 실제 GPS 대신 **선로 외방 고정 위치**에 표시.  
+`direction='상하선'`인 경우는 단방향 오프셋 불가 → GPS 위치 그대로 유지.
+
+**알고리즘 3단계**:
+
+```
+① 선로 중심선 KP 보간
+   routeCoords(center_only 앵커)에서 시설물 KP 전후 브래킷 탐색
+   → 선형 보간으로 선로 중심점(SVG 좌표) 계산
+
+② GPS → 선로 중심 방향 벡터 산출
+   vx = proj(gpsLon,gpsLat)[0] - center[0]
+   vy = proj(gpsLon,gpsLat)[1] - center[1]
+   (GPS가 실제 선로 측에 입력되어 있으므로 방향이 자동으로 올바름)
+
+③ 최외방 선로 1간격 외방으로 고정 배치
+   targetDist = trackCount × TRACK_HALF_GAP_SVG
+   display = center + (vx,vy) / dist × targetDist
+```
+
+**노선별 표시 거리** (선로 중심 기준):
+
+| 선로 수 | 최외방 선로 | 표시 위치 (targetDist) |
+|---|---|---|
+| 단선(1) | ±0 | **0.5** SVG |
+| 복선(2) | ±0.5 | **1.0** SVG |
+| 2복선(4) | ±1.5 | **2.0** SVG |
+| 3복선(6) | ±2.5 | **3.0** SVG |
+
+**KP별 실제 선로 수**: `rail_track_sections` 우선, 없으면 `rail_routes.default_track_count` 사용  
+(`getTrackCountAtKp` 함수 — `routeTrackSectionsMapRef`에 노선별 구간 캐시)
+
+**레이블**: `name + station_type.toUpperCase()` → 예: `익산PP`, `금곡SSP`, `서울신호기계실`
+
+**⚠️ 주의**:
+- GPS가 선로 중심과 일치(`dist < 1e-3`)하면 offset 적용 불가 → GPS 위치 유지
+- `direction='상하선'`이면 offset 적용 안 함 → GPS 위치 유지
+- 보간 앵커는 `center_only` 모드(역 중심+터널교량 경계)이므로 역 간격이 긴 곡선 구간에서 미세 위치 오차 발생 가능 (방향 판별은 정확)
 
 ---
 
@@ -295,6 +360,28 @@ _CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start
 - `direction` 컬럼은 **tc05에서 삭제** — `tracks`로 대체
 - `block_type`: 단선차단/복선차단 → **선로차단** 통합
 
+### 차단종류(block_type) 목록
+
+등록 폼 표시 목록 (BLOCK_TYPES):
+
+| block_type | 비고 |
+|---|---|
+| `선로차단` | 노선 위 노란 실선 렌더링 |
+| `선로일시사용중지` | 선로차단과 동일 렌더링 (공식 명칭 구분 사용) |
+| `열차사이 차단` | ⚠️ 렌더링 규칙 미정 (추후 정의 필요) |
+| `보호지구 작업` | ⚠️ 렌더링 코드는 `보호지구작업`(공백 없음) — **공백 표기 통일 필요** |
+
+내부 전용 block_type (등록 폼에 미표시):
+
+| block_type | 비고 |
+|---|---|
+| `대표명령` | 상위 작업 계획 (parent_id=NULL) |
+| `전차선단전` | 변전소간 단전 (녹색 실선) |
+| `작업구간설정` | 최외방 +0.5×gap 외방 (인력/기계) |
+| `보호지구작업` | 최외방 +1.0×gap 외방, 사각형+해칭 |
+| `임시완속` | 노선 위 노란 점선 |
+| `속도제한` | 노선 위 노란 점선 |
+
 ### 차단작업 분류
 
 | work_type | 의미 | 렌더링 |
@@ -358,6 +445,10 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 | `tc07_org_sort_order` | organizations.sort_order 추가 |
 | `tc08_block_order_protection_fields` | catenary_protection / ZEP·ZCP·CPT·TZEP / worker_count |
 | `tc09_block_order_parent` | parent_id / equipment_name / speed_restriction |
+| `tc10_drop_region_name` | rail_facility_management_offices.region_name 컬럼 제거 |
+| `tc11_block_order_documents` | block_order_documents(PDF BYTEA) · block_order_monitors(열차감시원 복수) · block_orders 추가: document_id / project_name / approved_date / block_method / contractor_phone |
+| `tc12_block_order_stations` | block_orders 추가: start_station_name / end_station_name (차단구간 시작·종료역명) |
+| `tc13_projects` | projects 공사/사업 테이블 신설 · block_orders.project_id FK · GET/POST /api/v1/projects/ |
 
 ---
 

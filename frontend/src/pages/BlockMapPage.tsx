@@ -55,6 +55,200 @@ const DEFAULT_FACILITY_FILTER: FacilityFilter = {
   전기신호기계실: true,
 };
 
+// ── 인라인 상세 패널 컴포넌트 ────────────────────────────────────────────────
+
+import type { BlockOrder as BlockOrderType } from '../types';
+import { useQuery as _useQuery } from '@tanstack/react-query';
+import { fetchMonitors as _fetchMonitors, openDocumentInBrowser as _openDoc } from '../api/blockOrders';
+
+function InlineDetail({
+  order,
+  highlightedBlockIds,
+  consecutiveSeries,
+  dangerMut,
+}: {
+  order: BlockOrderType;
+  highlightedBlockIds: Set<number> | null;
+  consecutiveSeries: { dateFrom: string; dateTo: string; days: number } | null;
+  dangerMut: { mutate: (arg: { id: number; level: string | null }) => void; isPending: boolean };
+}) {
+  const { data: monitors = [] } = _useQuery<import('../types').BlockOrderMonitor[]>({
+    queryKey: ['monitors', order.id],
+    queryFn: () => _fetchMonitors(order.id),
+  });
+
+  return (
+    <div className="border-b border-blue-100 bg-blue-50/40">
+
+      {/* 승인원문 PDF 버튼 */}
+      {order.document_id != null && (
+        <div className="px-3 pt-2 pb-1">
+          <button
+            onClick={(e) => { e.stopPropagation(); _openDoc(order.document_id!); }}
+            className="w-full py-1 text-[10px] rounded border border-blue-300 bg-white text-blue-600 hover:bg-blue-50 flex items-center justify-center gap-1"
+          >
+            📄 승인원문 PDF 보기
+          </button>
+        </div>
+      )}
+
+      {/* 기본 정보 */}
+      <div className="px-3 py-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs border-b border-blue-100">
+        {order.project_name && (
+          <>
+            <span className="text-gray-400">사업명</span>
+            <span className="text-gray-700 break-words text-[10px]">{order.project_name}</span>
+          </>
+        )}
+        {order.approved_date && (
+          <>
+            <span className="text-gray-400">승인일자</span>
+            <span className="text-gray-800">{order.approved_date}</span>
+          </>
+        )}
+        <span className="text-gray-400">구간</span>
+        <span className="text-gray-800">
+          {order.block_type === '전차선단전'
+            ? (order.section_note ?? 'KP 미지정')
+            : `KP ${order.start_kp ?? order.start_km}~${order.end_kp ?? order.end_km}km`}
+        </span>
+        <span className="text-gray-400">시간</span>
+        <span className="text-gray-800">
+          {order.work_date} {order.start_time.slice(0,5)}~{order.end_time.slice(0,5)}
+        </span>
+        <span className="text-gray-400">분야/종류</span>
+        <span className="text-gray-800">{order.field} / {order.block_type}</span>
+        {order.block_method && (
+          <>
+            <span className="text-gray-400">차단방법</span>
+            <span className="text-gray-800">{order.block_method}</span>
+          </>
+        )}
+        {order.work_type && (
+          <>
+            <span className="text-gray-400">작업형태</span>
+            <span className="text-gray-800">{order.work_type}작업</span>
+          </>
+        )}
+        <span className="text-gray-400">시행주체</span>
+        <span className="text-gray-800">{order.implementer || '철도공사'}</span>
+        {order.contractor && (
+          <>
+            <span className="text-gray-400">시공사</span>
+            <span className="text-gray-800">
+              {order.contractor}
+              {order.contractor_phone && (
+                <span className="text-gray-500 ml-1">({order.contractor_phone})</span>
+              )}
+            </span>
+          </>
+        )}
+        <span className="text-gray-400">작업책임자</span>
+        <span className="text-gray-800">
+          {order.work_supervisor}
+          {order.work_supervisor_phone && (
+            <span className="text-gray-500 ml-1">({order.work_supervisor_phone})</span>
+          )}
+        </span>
+        <span className="text-gray-400">안전관리자</span>
+        <span className="text-gray-800">
+          {order.safety_manager}
+          {order.safety_manager_phone && (
+            <span className="text-gray-500 ml-1">({order.safety_manager_phone})</span>
+          )}
+        </span>
+        {order.electric_safety_manager && (
+          <>
+            <span className="text-gray-400">전기안전</span>
+            <span className="text-gray-800">
+              {order.electric_safety_manager}
+              {order.electric_safety_manager_phone && (
+                <span className="text-gray-500 ml-1">({order.electric_safety_manager_phone})</span>
+              )}
+            </span>
+          </>
+        )}
+        {order.note && (
+          <>
+            <span className="text-gray-400">비고</span>
+            <span className="text-gray-600 break-words">{order.note}</span>
+          </>
+        )}
+      </div>
+
+      {/* 열차감시원 */}
+      {(monitors.length > 0 || order.train_watcher) && (
+        <div className="px-3 py-1.5 border-b border-blue-100 text-xs">
+          <div className="text-[10px] text-gray-400 mb-1">열차감시원</div>
+          <div className="space-y-0.5">
+            {/* 레거시 단수 필드 */}
+            {order.train_watcher && monitors.length === 0 && (
+              <div className="text-gray-700">
+                {order.train_watcher}
+                {order.train_watcher_phone && (
+                  <span className="text-gray-500 ml-1">({order.train_watcher_phone})</span>
+                )}
+              </div>
+            )}
+            {/* 신규 복수 레코드 */}
+            {monitors.map((m) => (
+              <div key={m.id} className="flex items-center gap-1 text-gray-700">
+                {m.company && <span className="text-gray-400 text-[9px]">{m.company}</span>}
+                <span>{m.name}</span>
+                {m.phone && <span className="text-gray-500">({m.phone})</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 사업 묶음 / 연속작업 */}
+      {(highlightedBlockIds || consecutiveSeries) && (
+        <div className="px-3 py-1.5 border-b border-blue-100 bg-blue-100/50 text-xs space-y-1">
+          {highlightedBlockIds && order.doc_no && (
+            <div className="flex items-center gap-1">
+              <span className="font-medium text-blue-700">📋 사업묶음</span>
+              <span className="text-blue-600">문서 {order.doc_no} — {highlightedBlockIds.size}건</span>
+            </div>
+          )}
+          {consecutiveSeries && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <span className="font-medium text-amber-700">📅 연속작업</span>
+              <span className="text-amber-600 text-[10px]">{consecutiveSeries.dateFrom}~{consecutiveSeries.dateTo}</span>
+              <span className="px-1 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">{consecutiveSeries.days}일</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 위험등급 설정 */}
+      <div className="px-3 py-2">
+        <div className="text-[10px] text-gray-400 mb-1">위험등급</div>
+        <div className="flex gap-1">
+          {([
+            [null, '미지정', 'bg-gray-400'],
+            ['A',  'A 위험', 'bg-red-500'],
+            ['B',  'B 주의', 'bg-yellow-500'],
+            ['C',  'C 일반', 'bg-green-500'],
+          ] as [string | null, string, string][]).map(([v, label, cls]) => (
+            <button
+              key={String(v)}
+              onClick={(e) => { e.stopPropagation(); dangerMut.mutate({ id: order.id, level: v }); }}
+              className={`flex-1 py-0.5 text-[10px] rounded transition-colors ${
+                order.danger_level === v
+                  ? `${cls} text-white`
+                  : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-100'
+              }`}
+              disabled={dangerMut.isPending}
+            >{label}</button>
+          ))}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
 // ── 시설물 Accordion 그룹 컴포넌트 ───────────────────────────────────────────
 
 type FacilityItem = {
@@ -162,7 +356,9 @@ export default function BlockMapPage() {
   });
 
   // 노선 필터 팝오버 외부 클릭 시 닫힘
-  const routeFilterRef = useRef<HTMLDivElement>(null);
+  const routeFilterRef  = useRef<HTMLDivElement>(null);
+  const listScrollRef   = useRef<HTMLDivElement>(null);
+  const itemRefs        = useRef<Record<number, HTMLDivElement>>({});
   useEffect(() => {
     if (!routeFilterOpen) return;
     const handler = (e: MouseEvent) => {
@@ -174,10 +370,8 @@ export default function BlockMapPage() {
     return () => document.removeEventListener('mousedown', handler);
   }, [routeFilterOpen]);
 
-  // ── 드래그 패널 ─────────────────────────────────────────────────────────────
-  const mainRef  = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
+  // ── 사이드바 접힘 상태 ────────────────────────────────────────────────────────
+  const [workFilterOpen, setWorkFilterOpen] = useState(false);
 
   // ── 지도 설정 ───────────────────────────────────────────────────────────────
   const [selectedOrgId,        setSelectedOrgId]        = useState<number | null>(user?.organization_id ?? null);
@@ -449,34 +643,15 @@ export default function BlockMapPage() {
   }
 
   function handleSelect(id: number) {
-    setSelectedId((prev) => {
-      if (prev === id) { setPanelPos(null); return null; }
-      return id;
-    });
+    setSelectedId((prev) => (prev === id ? null : id));
   }
 
-  function onPanelDragStart(e: React.MouseEvent) {
-    if (!panelRef.current || !mainRef.current) return;
-    e.preventDefault();
-    const panelRect     = panelRef.current.getBoundingClientRect();
-    const containerRect = mainRef.current.getBoundingClientRect();
-    const startPosX  = panelPos?.x ?? (panelRect.left  - containerRect.left);
-    const startPosY  = panelPos?.y ?? (panelRect.top   - containerRect.top);
-    const startMouseX = e.clientX;
-    const startMouseY = e.clientY;
-    function onMove(ev: MouseEvent) {
-      setPanelPos({
-        x: startPosX + ev.clientX - startMouseX,
-        y: startPosY + ev.clientY - startMouseY,
-      });
-    }
-    function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }
+  // 지도 클릭 등 selectedId 변경 시 → 목록에서 해당 항목으로 자동 스크롤
+  useEffect(() => {
+    if (selectedId == null) return;
+    const el = itemRefs.current[selectedId];
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [selectedId]);
 
   // ── 렌더 ─────────────────────────────────────────────────────────────────────
 
@@ -524,108 +699,103 @@ export default function BlockMapPage() {
           </div>
         </div>
 
-        {/* 시행주체 · 작업형태 · 분야 · 위험등급 필터 */}
-        <div className="px-3 py-2 border-b shrink-0 space-y-2">
-          {/* 시행주체 (철도공사/철도공단/외부) */}
-          <div>
-            <div className="text-xs text-gray-500 mb-1">시행주체</div>
-            <div className="flex gap-1 flex-wrap">
-              {([
-                [null,       '전체',   'bg-blue-600'],
-                ['철도공사', '공사',   'bg-blue-600'],
-                ['철도공단', '공단',   'bg-purple-600'],
-                ['외부',     '외부',   'bg-yellow-500'],
-              ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
-                <button
-                  key={String(v)}
-                  onClick={() => setFilterImplementer(v)}
-                  className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
-                    filterImplementer === v
-                      ? `${activeCls} text-white border-transparent`
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          {/* 작업형태 (인력/장비/기계) */}
-          <div>
-            <div className="text-xs text-gray-500 mb-1">작업형태</div>
-            <div className="flex gap-1">
-              {([
-                [null,   '전체'],
-                ['인력', '인력'],
-                ['장비', '장비'],
-                ['기계', '기계'],
-              ] as [string | null, string][]).map(([v, label]) => (
-                <button
-                  key={v ?? 'all'}
-                  onClick={() => setFilterWorkType(v)}
-                  className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
-                    filterWorkType === v
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">분야</div>
-            <div className="flex gap-1">
-              {([
-                [null,   '전체'],
-                ['시설', '시설'],
-                ['전기', '전기'],
-                ['건축', '건축'],
-              ] as [string | null, string][]).map(([v, label]) => (
-                <button
-                  key={v ?? 'all'}
-                  onClick={() => setFilterField(v)}
-                  className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
-                    filterField === v
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
+        {/* ── 작업 구분 (접기/펼치기) ──────────────────────────────── */}
+        <div className="shrink-0 border-b">
+          <button
+            onClick={() => setWorkFilterOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50"
+          >
+            <span className="flex items-center gap-1.5">
+              작업 구분
+              {/* 활성 필터 수 배지 */}
+              {[filterImplementer, filterWorkType, filterField, filterDangerLevel].filter(Boolean).length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600 text-[9px] font-semibold">
+                  {[filterImplementer, filterWorkType, filterField, filterDangerLevel].filter(Boolean).length}
+                </span>
+              )}
+            </span>
+            <span className="text-gray-400">{workFilterOpen ? '▲' : '▼'}</span>
+          </button>
 
-          <div>
-            <div className="text-xs text-gray-500 mb-1">위험등급</div>
-            <div className="flex flex-wrap gap-1">
-              {([
-                [null,   '전체',  'bg-blue-600'],
-                ['A',    'A위험', 'bg-red-500'],
-                ['B',    'B주의', 'bg-yellow-500'],
-                ['C',    'C일반', 'bg-green-500'],
-                ['none', '미지정','bg-gray-400'],
-              ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
-                <button
-                  key={String(v)}
-                  onClick={() => setFilterDangerLevel(v)}
-                  className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
-                    filterDangerLevel === v
-                      ? `${activeCls} text-white border-transparent`
-                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+          {workFilterOpen && (
+            <div className="px-3 pb-3 space-y-2">
+              {/* 시행주체 */}
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">시행주체</div>
+                <div className="flex gap-1 flex-wrap">
+                  {([
+                    [null,       '전체', 'bg-blue-600'],
+                    ['철도공사', '공사', 'bg-blue-600'],
+                    ['철도공단', '공단', 'bg-purple-600'],
+                    ['외부',     '외부', 'bg-yellow-500'],
+                  ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
+                    <button key={String(v)} onClick={() => setFilterImplementer(v)}
+                      className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
+                        filterImplementer === v
+                          ? `${activeCls} text-white border-transparent`
+                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      }`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {/* 작업형태 */}
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">작업형태</div>
+                <div className="flex gap-1">
+                  {([
+                    [null, '전체'], ['인력', '인력'], ['장비', '장비'], ['기계', '기계'],
+                  ] as [string | null, string][]).map(([v, label]) => (
+                    <button key={v ?? 'all'} onClick={() => setFilterWorkType(v)}
+                      className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
+                        filterWorkType === v
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      }`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {/* 분야 */}
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">분야</div>
+                <div className="flex gap-1">
+                  {([
+                    [null, '전체'], ['시설', '시설'], ['전기', '전기'], ['건축', '건축'],
+                  ] as [string | null, string][]).map(([v, label]) => (
+                    <button key={v ?? 'all'} onClick={() => setFilterField(v)}
+                      className={`flex-1 py-0.5 text-[10px] rounded border transition-colors ${
+                        filterField === v
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      }`}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {/* 위험등급 */}
+              <div>
+                <div className="text-[10px] text-gray-400 mb-1">위험등급</div>
+                <div className="flex flex-wrap gap-1">
+                  {([
+                    [null,   '전체',  'bg-blue-600'],
+                    ['A',    'A위험', 'bg-red-500'],
+                    ['B',    'B주의', 'bg-yellow-500'],
+                    ['C',    'C일반', 'bg-green-500'],
+                    ['none', '미지정','bg-gray-400'],
+                  ] as [string | null, string, string][]).map(([v, label, activeCls]) => (
+                    <button key={String(v)} onClick={() => setFilterDangerLevel(v)}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                        filterDangerLevel === v
+                          ? `${activeCls} text-white border-transparent`
+                          : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      }`}>{label}</button>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* ── 지도 설정 (접기/펼치기) ──────────────────────────────── */}
-        <div className="shrink-0 border-b overflow-y-auto" style={{ maxHeight: '55%' }}>
+        <div className="shrink-0 overflow-y-auto" style={{ maxHeight: '55%' }}>
           <button
             onClick={() => setMapSettingsOpen((v) => !v)}
             className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 sticky top-0 bg-white z-10 border-b"
@@ -829,8 +999,10 @@ export default function BlockMapPage() {
           )}
         </div>
 
-        {/* ── 차단명령 목록 (주 영역) ──────────────────────────────── */}
+        {/* ── 차단명령 목록 (아코디언: 항목 클릭 → 아래에 상세 펼침) ─ */}
         <div className="flex flex-col flex-1 overflow-hidden">
+
+          {/* 헤더 */}
           <div className="px-3 py-2 shrink-0 text-xs font-medium text-gray-500 border-b flex items-center gap-1">
             <span>차단명령 목록</span>
             {ordersLoading
@@ -854,63 +1026,73 @@ export default function BlockMapPage() {
             </div>
           )}
 
-          <div className="overflow-y-auto flex-1">
+          {/* 스크롤 목록 */}
+          <div ref={listScrollRef} className="overflow-y-auto flex-1">
             {filteredBlockOrders.map((bo) => {
               const isSelected = selectedId === bo.id;
               const isOnMap    = onMapIds.has(bo.id);
               const routeName  = bo.route_name
                 ?? routeMap.get(bo.route_id)?.name
                 ?? (bo.route_id != null ? `노선 #${bo.route_id}` : '노선 미지정');
+
               return (
-                <button
+                <div
                   key={bo.id}
-                  onClick={() => handleSelect(bo.id)}
-                  className={`w-full text-left px-3 py-2 border-b text-xs transition-colors ${
-                    isSelected ? 'bg-red-50 border-l-2 border-l-red-500' : 'hover:bg-gray-50'
-                  }`}
+                  ref={(el) => { if (el) itemRefs.current[bo.id] = el; }}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-gray-800 truncate">{routeName}</span>
-                    <div className="flex items-center gap-1 shrink-0 ml-1">
-                      {bo.danger_level && (
-                        <span
-                          className="text-[9px] px-1 py-0.5 rounded text-white font-medium"
-                          style={{
-                            backgroundColor: bo.danger_level === 'A' ? '#ef4444'
-                              : bo.danger_level === 'B' ? '#f59e0b'
-                              : '#10b981',
-                          }}
-                        >
-                          {bo.danger_level}등급
-                        </span>
-                      )}
-                      {bo.is_external && (
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-yellow-100 text-yellow-700">외부</span>
-                      )}
-                      {isOnMap
-                        ? <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-600">지도</span>
-                        : <span className="text-[9px] px-1 py-0.5 rounded bg-gray-100 text-gray-400">미표시</span>
-                      }
+                  {/* 항목 행 (클릭 → 토글) */}
+                  <button
+                    onClick={() => handleSelect(bo.id)}
+                    className={`w-full text-left px-3 py-2 border-b text-xs transition-colors ${
+                      isSelected
+                        ? 'bg-blue-50 border-l-[3px] border-l-blue-500'
+                        : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-gray-800 truncate">{routeName}</span>
+                      <div className="flex items-center gap-1 shrink-0 ml-1">
+                        {bo.danger_level && (
+                          <span className="text-[9px] px-1 py-0.5 rounded text-white font-medium"
+                            style={{
+                              backgroundColor: bo.danger_level === 'A' ? '#ef4444'
+                                : bo.danger_level === 'B' ? '#f59e0b' : '#10b981',
+                            }}>
+                            {bo.danger_level}등급
+                          </span>
+                        )}
+                        {bo.is_external && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-yellow-100 text-yellow-700">외부</span>
+                        )}
+                        {isOnMap
+                          ? <span className="text-[9px] px-1 py-0.5 rounded bg-blue-100 text-blue-600">지도</span>
+                          : <span className="text-[9px] px-1 py-0.5 rounded bg-gray-100 text-gray-400">미표시</span>}
+                        <span className="text-gray-400 text-[9px]">{isSelected ? '▲' : '▼'}</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-gray-500 mt-0.5 flex items-center gap-1">
-                    {bo.block_type === '전차선단전' ? (
-                      <span className="truncate">{bo.section_note ?? 'KP 미지정'}</span>
-                    ) : (
-                      <span>KP {bo.start_kp ?? bo.start_km}~{bo.end_kp ?? bo.end_km}km</span>
-                    )}
-                    <span
-                      className="px-1 rounded text-white text-[9px] shrink-0"
-                      style={{ backgroundColor: TRACK_COLOR }}
-                    >
-                      {fmtTracks(bo.tracks)}
-                    </span>
-                  </div>
-                  <div className="text-gray-500">
-                    {fmtTime(bo.start_time)}~{fmtTime(bo.end_time)}
-                  </div>
-                  <div className="text-gray-400">{bo.field} / {bo.block_type}</div>
-                </button>
+                    <div className="text-gray-500 mt-0.5 flex items-center gap-1">
+                      {bo.block_type === '전차선단전'
+                        ? <span className="truncate">{bo.section_note ?? 'KP 미지정'}</span>
+                        : <span>KP {bo.start_kp ?? bo.start_km}~{bo.end_kp ?? bo.end_km}km</span>}
+                      <span className="px-1 rounded text-white text-[9px] shrink-0"
+                        style={{ backgroundColor: TRACK_COLOR }}>
+                        {fmtTracks(bo.tracks)}
+                      </span>
+                    </div>
+                    <div className="text-gray-500">{fmtTime(bo.start_time)}~{fmtTime(bo.end_time)}</div>
+                    <div className="text-gray-400">{bo.field} / {bo.block_type}</div>
+                  </button>
+
+                  {/* 인라인 상세 (선택된 항목 아래에 펼침) */}
+                  {isSelected && selectedOrder && (
+                    <InlineDetail
+                      order={selectedOrder}
+                      highlightedBlockIds={highlightedBlockIds}
+                      consecutiveSeries={consecutiveSeries}
+                      dangerMut={dangerMut}
+                    />
+                  )}
+                </div>
               );
             })}
           </div>
@@ -919,7 +1101,7 @@ export default function BlockMapPage() {
       </aside>
 
       {/* ── 지도 영역 ────────────────────────────────────────────────── */}
-      <main ref={mainRef} className="flex-1 relative overflow-hidden min-h-0 min-w-0">
+      <main className="flex-1 relative overflow-hidden min-h-0 min-w-0">
         <RailwayMap
           orgId={mapOrgId}
           showOrgBoundary={showOrgBoundary && mapOrgId != null}
@@ -953,167 +1135,6 @@ export default function BlockMapPage() {
             <span className="text-gray-400">(지도 {onMapIds.size}/{filteredBlockOrders.length}건)</span>
           )}
         </div>
-
-        {/* 차단명령 상세 패널 — 드래그 가능 */}
-        {selectedOrder && (
-          <div
-            ref={panelRef}
-            className={`absolute bg-white border border-gray-200 rounded-xl shadow-xl z-20 w-80 select-none ${
-              panelPos ? '' : 'bottom-4 left-1/2 -translate-x-1/2'
-            }`}
-            style={panelPos ? { top: panelPos.y, left: panelPos.x } : undefined}
-          >
-            {/* 드래그 핸들 헤더 */}
-            <div
-              className="flex items-center justify-between px-3 py-2 border-b bg-gray-50 rounded-t-xl cursor-grab active:cursor-grabbing"
-              onMouseDown={(e) => {
-                // 닫기 버튼 영역(data-close)을 클릭한 경우 드래그 핸들러 실행 안 함
-                const target = e.target as HTMLElement;
-                if (target.closest('[data-panel-close]')) return;
-                onPanelDragStart(e);
-              }}
-            >
-              <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
-                <span className="font-semibold text-gray-800 text-xs truncate">
-                  {selectedOrder.route_name
-                    ?? routeMap.get(selectedOrder.route_id)?.name
-                    ?? (selectedOrder.route_id != null ? `노선 #${selectedOrder.route_id}` : '노선 미지정')}
-                </span>
-                <span
-                  className="px-1.5 py-0.5 rounded text-white text-[10px] font-medium shrink-0"
-                  style={{ backgroundColor: TRACK_COLOR }}
-                >
-                  {fmtTracks(selectedOrder.tracks)}
-                </span>
-                {selectedOrder.danger_level && (
-                  <span
-                    className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold shrink-0"
-                    style={{ backgroundColor: DANGER_COLOR[selectedOrder.danger_level] ?? '#888' }}
-                  >
-                    {DANGER_LABEL[selectedOrder.danger_level] ?? selectedOrder.danger_level}
-                  </span>
-                )}
-              </div>
-              <button
-                data-panel-close
-                onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-                onClick={(e) => { e.stopPropagation(); setSelectedId(null); setPanelPos(null); }}
-                className="text-gray-400 hover:text-gray-700 text-base leading-none ml-2 shrink-0 px-1"
-              >✕</button>
-            </div>
-
-            {/* 상세 내용 */}
-            <div className="px-3 py-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-              <span className="text-gray-400">구간</span>
-              <span className="text-gray-800">
-                {selectedOrder.block_type === '전차선단전'
-                  ? (selectedOrder.section_note ?? 'KP 미지정')
-                  : `KP ${selectedOrder.start_kp ?? selectedOrder.start_km}~${selectedOrder.end_kp ?? selectedOrder.end_km}km`}
-              </span>
-              <span className="text-gray-400">작업 시간</span>
-              <span className="text-gray-800">
-                {selectedOrder.work_date} {fmtTime(selectedOrder.start_time)}~{fmtTime(selectedOrder.end_time)}
-              </span>
-              <span className="text-gray-400">분야/종류</span>
-              <span className="text-gray-800">{selectedOrder.field} / {selectedOrder.block_type}</span>
-              <span className="text-gray-400">작업책임자</span>
-              <span className="text-gray-800">
-                {selectedOrder.work_supervisor}
-                {selectedOrder.work_supervisor_phone && (
-                  <span className="text-gray-500 ml-1">({selectedOrder.work_supervisor_phone})</span>
-                )}
-              </span>
-              <span className="text-gray-400">안전관리자</span>
-              <span className="text-gray-800">
-                {selectedOrder.safety_manager}
-                {selectedOrder.safety_manager_phone && (
-                  <span className="text-gray-500 ml-1">({selectedOrder.safety_manager_phone})</span>
-                )}
-              </span>
-              {selectedOrder.electric_safety_manager && (
-                <>
-                  <span className="text-gray-400">전기안전</span>
-                  <span className="text-gray-800">
-                    {selectedOrder.electric_safety_manager}
-                    {selectedOrder.electric_safety_manager_phone && (
-                      <span className="text-gray-500 ml-1">({selectedOrder.electric_safety_manager_phone})</span>
-                    )}
-                  </span>
-                </>
-              )}
-              {selectedOrder.note && (
-                <>
-                  <span className="text-gray-400">비고</span>
-                  <span className="text-gray-600 break-words">{selectedOrder.note}</span>
-                </>
-              )}
-              {/* 작업형태·시행주체 */}
-              {selectedOrder.work_type && (
-                <>
-                  <span className="text-gray-400">작업형태</span>
-                  <span className="text-gray-800">{selectedOrder.work_type}작업</span>
-                </>
-              )}
-              <span className="text-gray-400">시행주체</span>
-              <span className="text-gray-800">{selectedOrder.implementer || '철도공사'}</span>
-            </div>
-
-            {/* ── 사업건별 정보 ── */}
-            {(highlightedBlockIds || consecutiveSeries) && (
-              <div className="px-3 py-2 border-t bg-blue-50 text-xs space-y-1.5">
-                {/* 같은 문서번호 묶음 */}
-                {highlightedBlockIds && selectedOrder.doc_no && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-medium text-blue-700">📋 사업 묶음</span>
-                    <span className="text-blue-600">
-                      문서 {selectedOrder.doc_no} — {highlightedBlockIds.size}건
-                    </span>
-                    <span className="text-blue-400 text-[10px]">(지도에서 강조됨)</span>
-                  </div>
-                )}
-                {/* 연속 작업 시리즈 */}
-                {consecutiveSeries && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-medium text-amber-700">📅 연속 작업</span>
-                    <span className="text-amber-600">
-                      {consecutiveSeries.dateFrom} ~ {consecutiveSeries.dateTo}
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
-                      {consecutiveSeries.days}일
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 위험등급 수정 */}
-            <div className="px-3 pb-2.5 pt-1.5 border-t">
-              <div className="text-[10px] text-gray-400 mb-1">위험등급 설정</div>
-              <div className="flex gap-1">
-                {([
-                  [null, '미지정', 'bg-gray-400'],
-                  ['A',  'A 위험', 'bg-red-500'],
-                  ['B',  'B 주의', 'bg-yellow-500'],
-                  ['C',  'C 일반', 'bg-green-500'],
-                ] as [string | null, string, string][]).map(([v, label, cls]) => (
-                  <button
-                    key={String(v)}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={() => dangerMut.mutate({ id: selectedOrder.id, level: v })}
-                    className={`px-2 py-0.5 text-[10px] rounded transition-colors ${
-                      selectedOrder.danger_level === v
-                        ? `${cls} text-white`
-                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                    }`}
-                    disabled={dangerMut.isPending}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
       </main>
 
     </div>

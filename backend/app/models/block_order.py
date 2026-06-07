@@ -1,7 +1,8 @@
 from datetime import date, time
 
 from sqlalchemy import Boolean, Date, Float, ForeignKey, Integer, String, Text, Time
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, Session
+import app.models.project  # noqa: F401 — Project FK target 참조용
 
 from app.core.database import Base
 
@@ -113,7 +114,37 @@ class BlockOrder(Base):
     note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
+    # ── tc11 추가 컬럼 ───────────────────────────────────────────────────────
+    # 승인원문 PDF (block_order_documents.id FK)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("block_order_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    # 관련사업명 (예: "경부선 안양-의왕간 등 9개소 노후 레일 및 침목교환 기타공사")
+    project_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # 승인일자 (문서 발행일, work_date와 별개)
+    approved_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 차단방법 코드 (고속선: SS / SSS, 일반선: NULL)
+    block_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 시공사 연락처 (contractor 컬럼과 쌍)
+    contractor_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # ── tc12 추가 컬럼 ───────────────────────────────────────────────────────
+    # 차단구간 시작역/지점명 (예: "안양", "금천구청")
+    # 전차선 단전 구간명은 section_note에 "청도SP~밀양SS" 형식으로 유지
+    start_station_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 차단구간 종료역/지점명 (예: "의왕", "가산디지털단지")
+    end_station_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # ── tc13 추가 컬럼 ───────────────────────────────────────────────────────
+    # 공사/사업 FK — NULL 허용 (등록된 프로젝트가 없거나 project_name만 있는 경우)
+    project_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+
     organization: Mapped["Organization"] = relationship(back_populates="block_orders")
     route: Mapped["Route"] = relationship(back_populates="block_orders")
     rail_route: Mapped["RailRoute"] = relationship("RailRoute")
     created_by_user: Mapped["User"] = relationship(back_populates="block_orders")
+    project: Mapped["app.models.project.Project | None"] = relationship(  # type: ignore[name-defined]
+        "Project", back_populates="block_orders", foreign_keys=[project_id]
+    )

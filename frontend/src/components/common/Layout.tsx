@@ -57,7 +57,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col h-screen">
       <header className="bg-blue-700 text-white flex items-center px-4 py-2 gap-4 shrink-0">
-        <span className="font-bold text-sm whitespace-nowrap">선로차단작업 관리</span>
+        <NavLink to="/block-map" className="font-bold text-sm whitespace-nowrap text-white hover:text-blue-100 transition-colors">
+          선로차단작업 관리
+        </NavLink>
 
         <nav className="flex gap-1 flex-1 items-center flex-wrap">
           {/* 그룹 1 — 조회·현황 */}
@@ -119,6 +121,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </>
           )}
+
+          {/* 도움말 — 항상 메뉴 제일 우측 */}
+          <NavLink to="/help"
+            className={({ isActive }) => navCls(isActive)}>
+            도움말
+          </NavLink>
         </nav>
 
         <div className="flex items-center gap-3 text-sm shrink-0">

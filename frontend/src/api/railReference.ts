@@ -172,7 +172,6 @@ export interface RailFacility {
   nearest_station_id: number | null;
   nearest_station_name: string | null;
   management_office_id: number | null;
-  management_region_name: string | null;
   management_office_name: string | null;
   bore_type: string;           // 복선 | 단선_상선 | 단선_하선
   use_as_baseline_anchor: boolean;

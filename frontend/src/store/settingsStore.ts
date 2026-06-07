@@ -46,7 +46,7 @@ export interface FacilityColors {
 // 기본값 (DB 로드 실패 시 fallback)
 export const DEFAULT_ROUTE_COLORS: RouteColors = {
   highway:        '#dc2626',
-  electrified:    '#f97316',
+  electrified:    '#000000',
   nonElectrified: '#9ca3af',
   catenaryCut:    '#16a34a',
 };

@@ -1,5 +1,6 @@
 import csv
 import io
+import math
 from itertools import groupby as _groupby
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -13,7 +14,64 @@ from app.models.user import User
 
 router = APIRouter(prefix="/rail-reference", tags=["기준정보"])
 
-VALID_DIRECTIONS = {"UP", "DOWN", "BOTH"}
+VALID_DIRECTIONS = {"상선", "하선", "상하선"}
+
+_LAT_M = 111000.0
+
+
+def _lon_m(lat_deg: float) -> float:
+    return _LAT_M * math.cos(math.radians(lat_deg))
+
+
+def _interpolate_and_tangent(pts: list, kp_target: float):
+    """pts: [(kp, lat, lon), ...] KP 오름차순. Returns (center_lat, center_lon, tx, ty) or None."""
+    if len(pts) < 2:
+        return None
+    lower = upper = None
+    for i, (kp, _, __) in enumerate(pts):
+        if kp <= kp_target:
+            lower = i
+        if kp >= kp_target and upper is None:
+            upper = i
+            break
+    if lower is None:
+        lower, upper = 0, 1
+    elif upper is None:
+        lower, upper = len(pts) - 2, len(pts) - 1
+    if lower == upper:
+        lower = max(0, lower - 1) if lower > 0 else 0
+        upper = lower + 1
+    if upper >= len(pts):
+        upper = len(pts) - 1
+        lower = upper - 1
+    kp_a, lat_a, lon_a = pts[lower]
+    kp_b, lat_b, lon_b = pts[upper]
+    avg_lat = (lat_a + lat_b) / 2
+    lm = _lon_m(avg_lat)
+    dx = (lon_b - lon_a) * lm
+    dy = (lat_b - lat_a) * _LAT_M
+    length = math.sqrt(dx * dx + dy * dy)
+    if length < 1e-9:
+        return None
+    tx, ty = dx / length, dy / length
+    if kp_b == kp_a:
+        return lat_a, lon_a, tx, ty
+    t = (kp_target - kp_a) / (kp_b - kp_a)
+    return lat_a + t * (lat_b - lat_a), lon_a + t * (lon_b - lon_a), tx, ty
+
+
+def _correct_20m(gps_lat: float, gps_lon: float, center_lat: float, center_lon: float, tx: float, ty: float, offset_m: float = 20.0):
+    """GPS → 레일 중심선 방향으로 offset_m 이동. Returns (new_lat, new_lon)."""
+    avg_lat = (gps_lat + center_lat) / 2
+    lm = _lon_m(avg_lat)
+    gx = (gps_lon - center_lon) * lm
+    gy = (gps_lat - center_lat) * _LAT_M
+    nx, ny = -ty, tx  # 접선의 90° CCW 법선
+    signed_dist = gx * nx + gy * ny
+    sign = 1.0 if signed_dist > 0 else -1.0
+    new_lon = gps_lon - sign * offset_m * nx / lm
+    new_lat = gps_lat - sign * offset_m * ny / _LAT_M
+    return new_lat, new_lon
 
 
 VALID_BORE_TYPES = {'복선', '단선_상선', '단선_하선'}
@@ -156,7 +214,7 @@ def _validate_facility_data(
 
     direction = merged.get("direction")
     if direction not in (None, "") and direction not in VALID_DIRECTIONS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="방향은 UP, DOWN, BOTH 중 하나여야 합니다")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="방향은 상선, 하선, 상하선 중 하나여야 합니다")
     if data.get("direction") == "":
         data["direction"] = None
 
@@ -209,7 +267,6 @@ def _facility_response(db: Session, facility_id: int) -> dict:
                     rf.nearest_station_id,
                     ns.name AS nearest_station_name,
                     rf.management_office_id,
-                    mo.region_name AS management_region_name,
                     mo.office_name AS management_office_name,
                     rf.bore_type,
                     rf.use_as_baseline_anchor,
@@ -375,7 +432,9 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
                     rf.bore_type,
                     rf.use_as_baseline_anchor,
                     rf.is_active,
-                    c.geometry_type
+                    rf.direction,
+                    c.geometry_type,
+                    c.major_category
                 FROM rail_facilities rf
                 JOIN rail_facility_classifications c ON c.id = rf.classification_id
                 WHERE rf.id = :facility_id
@@ -413,6 +472,7 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
                     "kp": row["kp_start"],
                     "lat": row["lat"],
                     "lon": row["lon"],
+                    "is_interpolation_anchor": True,
                     "note": "철도시설물 시작점 기준선 앵커",
                 }
             )
@@ -423,16 +483,32 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
                     "kp": row["kp_end"],
                     "lat": row["lat_end"],
                     "lon": row["lon_end"],
+                    "is_interpolation_anchor": True,
                     "note": "철도시설물 종료점 기준선 앵커",
                 }
             )
     elif row["kp_start"] is not None and row["lat"] is not None and row["lon"] is not None:
+        anchor_lat = row["lat"]
+        anchor_lon = row["lon"]
+
+        # 전기설비(point): GPS → 선로 중심 방향으로 20m 이동 (direction 기반)
+        if row["major_category"] == "전기설비":
+            anchor_lat, anchor_lon = _apply_20m_baseline_correction(
+                db,
+                route_id=int(row["rail_route_id"]),
+                kp=float(row["kp_start"]),
+                gps_lat=float(row["lat"]),
+                gps_lon=float(row["lon"]),
+                direction=row["direction"],
+            )
+
         point_rows.append(
             {
                 "point_type": "facility_point",
                 "kp": row["kp_start"],
-                "lat": row["lat"],
-                "lon": row["lon"],
+                "lat": anchor_lat,
+                "lon": anchor_lon,
+                "is_interpolation_anchor": True,
                 "note": "철도시설물 기준선 앵커",
             }
         )
@@ -468,8 +544,8 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
                     'rail_facility',
                     :facility_id,
                     :facility_id,
-                    1,
-                    1,
+                    :is_interpolation_anchor,
+                    TRUE,
                     :note,
                     CURRENT_TIMESTAMP
                 )
@@ -483,6 +559,64 @@ def _sync_facility_baseline_points(db: Session, facility_id: int) -> None:
         )
 
     _resequence_baseline_route(db, int(row["rail_route_id"]))
+
+
+def _apply_20m_baseline_correction(
+    db: Session,
+    route_id: int,
+    kp: float,
+    gps_lat: float,
+    gps_lon: float,
+    direction: str | None = None,
+) -> tuple[float, float]:
+    """전기설비 GPS → 선로 중심 방향으로 20m 이동.
+
+    direction='하선': 시점→종점 기준 왼쪽(하선) → 오른쪽(CW)으로 20m
+                     dlon = ty×20/lon_m,  dlat = -tx×20/LAT_M
+    direction='상선': 시점→종점 기준 오른쪽(상선) → 왼쪽(CCW)으로 20m
+                     dlon = -ty×20/lon_m, dlat =  tx×20/LAT_M
+    direction='상하선': 선로 중심부 → GPS 그대로
+    direction=None:  기하학적 signed-distance 방식 (fallback)
+    실패 시 원본 GPS 반환.
+    """
+    if direction == "상하선":
+        return gps_lat, gps_lon
+
+    pts_rows = db.execute(
+        text(
+            """
+            SELECT kp, lat, lon
+            FROM rail_baseline_points
+            WHERE rail_route_id = :route_id
+              AND point_type IN (
+                  'station_center', 'station_yard_start', 'station_yard_end',
+                  'facility_start', 'facility_end'
+              )
+              AND kp IS NOT NULL AND lat IS NOT NULL AND lon IS NOT NULL
+            ORDER BY kp
+            """
+        ),
+        {"route_id": route_id},
+    ).fetchall()
+    pts = [(r[0], r[1], r[2]) for r in pts_rows]
+
+    result = _interpolate_and_tangent(pts, kp)
+    if result is None:
+        return gps_lat, gps_lon
+
+    _, _, tx, ty = result
+    lm = _lon_m(gps_lat)
+
+    if direction == "하선":
+        # 하선(왼쪽) → 오른쪽(CW, 선로 중심) 방향으로 20m: (ty, -tx)
+        return gps_lat - tx * 20.0 / _LAT_M, gps_lon + ty * 20.0 / lm
+    elif direction == "상선":
+        # 상선(오른쪽) → 왼쪽(CCW, 선로 중심) 방향으로 20m: (-ty, tx)
+        return gps_lat + tx * 20.0 / _LAT_M, gps_lon - ty * 20.0 / lm
+    else:
+        # direction=None: 기하학적 signed-distance fallback
+        center_lat, center_lon, tx2, ty2 = result
+        return _correct_20m(gps_lat, gps_lon, center_lat, center_lon, tx2, ty2, 20.0)
 
 
 @router.get("/summary")
@@ -835,7 +969,7 @@ def update_station_point(
     if body.yard_end_kp is not None:
         updates["yard_end_kp"] = body.yard_end_kp
     if body.is_baseline_anchor is not None:
-        updates["is_baseline_anchor"] = int(body.is_baseline_anchor)
+        updates["is_baseline_anchor"] = body.is_baseline_anchor
 
     if updates:
         set_clause = ", ".join(f"{k} = :{k}" for k in updates)
@@ -861,7 +995,111 @@ def update_station_point(
             {**station_updates, "station_id": row["station_id"]},
         )
 
+    # ── rail_baseline_points 동기화 ─────────────────────────────────────────
+    # GPS·KP·is_baseline_anchor 변경 시 station_center 레코드를 동기화한다.
+    needs_sync = (
+        body.is_baseline_anchor is not None
+        or body.lat is not None
+        or body.lon is not None
+        or body.center_kp is not None
+    )
+
+    if needs_sync:
+        # 업데이트 반영 후 현재 최종 상태 조회 (같은 트랜잭션 내에서 자신의 변경이 보임)
+        final = db.execute(
+            text("""
+                SELECT rsp.is_baseline_anchor, rsp.center_kp,
+                       s.lat, s.lon
+                FROM rail_route_station_points rsp
+                JOIN rail_stations s ON s.id = rsp.station_id
+                WHERE rsp.id = :id
+            """),
+            {"id": point_id},
+        ).mappings().first()
+
+        if final:
+            anchor_val = final["is_baseline_anchor"]
+            kp_val     = final["center_kp"]
+            lat_val    = final["lat"]
+            lon_val    = final["lon"]
+
+            # 기존 station_center 레코드 조회
+            existing_bp = db.execute(
+                text("""
+                    SELECT id FROM rail_baseline_points
+                    WHERE station_id = :sid
+                      AND rail_route_id = :rid
+                      AND point_type = 'station_center'
+                """),
+                {"sid": row["station_id"], "rid": row["rail_route_id"]},
+            ).first()
+
+            if anchor_val and lat_val is not None and lon_val is not None and kp_val is not None:
+                # is_baseline_anchor=True + GPS + KP 있음 → UPSERT station_center
+                if existing_bp:
+                    db.execute(
+                        text("""
+                            UPDATE rail_baseline_points
+                            SET kp = :kp, lat = :lat, lon = :lon,
+                                is_interpolation_anchor = TRUE,
+                                is_render_anchor = TRUE,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = :id
+                        """),
+                        {"kp": kp_val, "lat": lat_val, "lon": lon_val, "id": existing_bp.id},
+                    )
+                else:
+                    db.execute(
+                        text("""
+                            INSERT INTO rail_baseline_points
+                              (rail_route_id, segment_no, seq, kp, lat, lon,
+                               point_type, source_type, station_id,
+                               is_interpolation_anchor, is_render_anchor)
+                            VALUES (:rid, 0, 0, :kp, :lat, :lon,
+                                    'station_center', 'station', :sid, TRUE, TRUE)
+                        """),
+                        {
+                            "rid": row["rail_route_id"],
+                            "kp": kp_val, "lat": lat_val, "lon": lon_val,
+                            "sid": row["station_id"],
+                        },
+                    )
+            elif not anchor_val and existing_bp:
+                # is_baseline_anchor=False → 플래그 해제 (레코드는 유지)
+                db.execute(
+                    text("""
+                        UPDATE rail_baseline_points
+                        SET is_interpolation_anchor = FALSE,
+                            is_render_anchor = FALSE,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = :id
+                    """),
+                    {"id": existing_bp.id},
+                )
+
+            # KP 순서 재정렬
+            db.execute(
+                text("""
+                    WITH ranked AS (
+                        SELECT id,
+                               ROW_NUMBER() OVER (ORDER BY kp, id) AS new_seq
+                        FROM rail_baseline_points
+                        WHERE rail_route_id = :rid
+                    )
+                    UPDATE rail_baseline_points bp
+                    SET seq = r.new_seq
+                    FROM ranked r
+                    WHERE bp.id = r.id
+                """),
+                {"rid": row["rail_route_id"]},
+            )
+
     db.commit()
+
+    # 노선 geometry 재계산
+    if needs_sync:
+        _rebuild_computed_geometry_route(db, row["rail_route_id"])
+        db.commit()
 
     updated = db.execute(
         text("""
@@ -923,7 +1161,6 @@ def list_rail_facilities(
                     rf.nearest_station_id,
                     ns.name AS nearest_station_name,
                     rf.management_office_id,
-                    mo.region_name AS management_region_name,
                     mo.office_name AS management_office_name,
                     rf.bore_type,
                     rf.use_as_baseline_anchor,
@@ -1032,11 +1269,12 @@ def create_rail_facility(
                 :note,
                 CURRENT_TIMESTAMP
             )
+            RETURNING id
             """
         ),
         data,
-    )
-    facility_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
+    ).scalar_one()
+    facility_id = int(facility_id)
     _sync_facility_baseline_points(db, facility_id)
     _rebuild_computed_geometry_route(db, rail_route_id)
     db.commit()
@@ -1277,6 +1515,7 @@ async def bulk_upload_facilities(
                         :entrance_passage_type, :entrance_lock_type,
                         :bore_type, :use_as_baseline_anchor, :is_active, :note, CURRENT_TIMESTAMP
                     )
+                    RETURNING id
                 """),
                 {
                     "rail_route_id": rail_route_id,
@@ -1303,8 +1542,8 @@ async def bulk_upload_facilities(
                     "is_active": is_active,
                     "note": (row.get("note") or "").strip() or None,
                 },
-            )
-            facility_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
+            ).scalar_one()
+            facility_id = int(facility_id)
             if use_as_baseline_anchor and is_active and lat is not None:
                 _sync_facility_baseline_points(db, facility_id)
             success_count += 1
@@ -1478,6 +1717,7 @@ def create_track_section(
                 (rail_route_id, start_kp, end_kp, track_count, has_catenary, note, updated_at)
             VALUES
                 (:rail_route_id, :start_kp, :end_kp, :track_count, :has_catenary, :note, CURRENT_TIMESTAMP)
+            RETURNING id
         """),
         {
             "rail_route_id": rail_route_id,
@@ -1487,8 +1727,8 @@ def create_track_section(
             "has_catenary":  body.has_catenary,
             "note":          body.note,
         },
-    )
-    new_id = int(db.execute(text("SELECT last_insert_rowid()")).scalar_one())
+    ).scalar_one()
+    new_id = int(new_id)
     db.commit()
     row = db.execute(
         text("SELECT * FROM rail_track_sections WHERE id = :id"), {"id": new_id}

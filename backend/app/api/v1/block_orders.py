@@ -6,10 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, get_db, require_org_admin
 from app.models.block_order import BlockOrder
+from app.models.block_order_document import BlockOrderMonitor
 from app.models.rail_baseline import RailRoute
 from app.models.route import Route
 from app.models.user import User
-from app.schemas.block_order import BlockOrderCreate, BlockOrderResponse, BlockOrderUpdate
+from app.schemas.block_order import (
+    BlockOrderCreate, BlockOrderResponse, BlockOrderUpdate,
+    BlockOrderMonitorCreate, BlockOrderMonitorResponse,
+)
 from app.services.auth_service import can_register_block_order, is_owner_or_superuser
 from app.api.v1.rail_reference import get_effective_track_info
 
@@ -499,4 +503,60 @@ def delete_block_order(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="삭제 권한이 없습니다")
 
     db.delete(order)
+    db.commit()
+
+
+# ── 열차감시원 CRUD ────────────────────────────────────────────────────────────
+
+@router.get("/{order_id}/monitors", response_model=list[BlockOrderMonitorResponse])
+def list_monitors(
+    order_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    order = db.query(BlockOrder).filter(BlockOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="차단명령을 찾을 수 없습니다")
+    return db.query(BlockOrderMonitor).filter(BlockOrderMonitor.block_order_id == order_id).all()
+
+
+@router.post("/{order_id}/monitors", response_model=BlockOrderMonitorResponse,
+             status_code=status.HTTP_201_CREATED)
+def add_monitor(
+    order_id: int,
+    body: BlockOrderMonitorCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+):
+    order = db.query(BlockOrder).filter(BlockOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="차단명령을 찾을 수 없습니다")
+    if not is_owner_or_superuser(current_user, order.organization_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="권한이 없습니다")
+    monitor = BlockOrderMonitor(block_order_id=order_id, **body.model_dump())
+    db.add(monitor)
+    db.commit()
+    db.refresh(monitor)
+    return monitor
+
+
+@router.delete("/{order_id}/monitors/{monitor_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_monitor(
+    order_id: int,
+    monitor_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+):
+    order = db.query(BlockOrder).filter(BlockOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="차단명령을 찾을 수 없습니다")
+    if not is_owner_or_superuser(current_user, order.organization_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="권한이 없습니다")
+    monitor = db.query(BlockOrderMonitor).filter(
+        BlockOrderMonitor.id == monitor_id,
+        BlockOrderMonitor.block_order_id == order_id,
+    ).first()
+    if not monitor:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="감시원을 찾을 수 없습니다")
+    db.delete(monitor)
     db.commit()

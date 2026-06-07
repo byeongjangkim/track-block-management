@@ -68,6 +68,7 @@ export interface Route {
   up_direction: string | null;
   down_direction: string | null;
   default_track_count: number;   // 1=단선, 2=복선, 4=2복선, 6=3복선
+  line_type?: string;            // 일반선 | 고속선 | 기지 등
 }
 
 export interface Facility {
@@ -126,14 +127,44 @@ export interface BlockOrder {
   electric_safety_manager: string | null;
   electric_safety_manager_phone: string | null;
   contractor: string | null;
+  contractor_phone: string | null;   // 시공사 연락처
   train_watcher: string | null;
   train_watcher_phone: string | null;
   reason: string | null;
   safety_items: string | null;
   track_name: string | null;
   document_path: string | null;
+  // tc11 추가
+  document_id:   number | null;   // block_order_documents.id
+  project_name:  string | null;   // 관련사업명
+  approved_date: string | null;   // 승인일자 YYYY-MM-DD
+  block_method:  string | null;   // 차단방법 코드 (SS/SSS 등)
+  // tc12 추가
+  start_station_name: string | null;  // 차단구간 시작역/지점명 (예: "안양")
+  end_station_name:   string | null;  // 차단구간 종료역/지점명 (예: "의왕")
+  // tc13 추가
+  project_id: number | null;          // projects.id FK
   note: string | null;
   created_by: number;
+}
+
+export interface BlockOrderDocument {
+  id:                number;
+  doc_no:            string | null;
+  original_filename: string;
+  file_size:         number | null;
+  content_type:      string;
+  uploaded_at:       string;
+  uploaded_by:       number | null;
+  note:              string | null;
+}
+
+export interface BlockOrderMonitor {
+  id:             number;
+  block_order_id: number;
+  name:           string;
+  phone:          string | null;
+  company:        string | null;
 }
 
 export interface BlockOrderCreate {
@@ -181,11 +212,22 @@ export interface BlockOrderCreate {
   electric_safety_manager?: string;
   electric_safety_manager_phone?: string;
   contractor?: string;
+  contractor_phone?: string | null;   // 시공사 연락처
   train_watcher?: string;
   train_watcher_phone?: string;
   reason?: string;
   safety_items?: string;
   track_name?: string | null;
+  // tc11
+  document_id?: number | null;
+  project_name?: string | null;       // 관련사업명
+  approved_date?: string | null;      // 승인일자 YYYY-MM-DD
+  block_method?: string | null;       // 차단방법 (SS/SSS 등 고속선)
+  // tc12
+  start_station_name?: string | null; // 차단구간 시작역/지점명
+  end_station_name?: string | null;   // 차단구간 종료역/지점명
+  // tc13
+  project_id?: number | null;         // projects.id FK
   note?: string;
 }
 
@@ -225,8 +267,19 @@ export interface ParsedBlockOrder {
   electric_safety_manager: string | null;
   electric_safety_manager_phone: string | null;
   contractor: string | null;
+  contractor_phone: string | null;
   train_watcher: string | null;
   train_watcher_phone: string | null;
+  project_name: string | null;
+  approved_date: string | null;
+  equipment_name: string | null;
+  start_station_name: string | null;
+  end_station_name: string | null;
+  block_method: string | null;
+  zep: string | null;
+  zcp: string | null;
+  cpt: string | null;
+  tzep: string | null;
   confidence: number;             // 0.0~1.0
   error: string | null;
 }
@@ -239,6 +292,9 @@ export interface ParsedRow {
   start_km: number | null;
   end_km: number | null;
   section_note: string | null;       // 전차선 단전 구간명 (예: "청도SP~밀양SS")
+  // tc12: 역간구간 시작/종료역명 (전차선 단전은 section_note 사용)
+  start_station_name: string | null;
+  end_station_name: string | null;
   tracks: TrackName[] | null;
   block_type: string | null;
   reason: string | null;
@@ -255,10 +311,21 @@ export interface ParsedRow {
   electric_safety_manager: string | null;
   electric_safety_manager_phone: string | null;
   contractor: string | null;
+  contractor_phone: string | null;   // 시공사 연락처
   train_watcher: string | null;
   train_watcher_phone: string | null;
   has_equipment: boolean;
   has_labor: boolean;
+  // tc11
+  project_name: string | null;       // 관련사업명
+  approved_date: string | null;      // 승인일자
+  equipment_name: string | null;     // 동원장비명
+  // 고속선 전용
+  block_method: string | null;       // 차단방법 (SS/SSS)
+  zep: string | null;
+  zcp: string | null;
+  cpt: string | null;
+  tzep: string | null;
   needs_review: boolean;
 }
 
@@ -318,9 +385,25 @@ export interface BulkBlockOrderItem {
   electric_safety_manager?: string | null;
   electric_safety_manager_phone?: string | null;
   contractor?: string | null;
+  contractor_phone?: string | null;   // 시공사 연락처
   train_watcher?: string | null;
   train_watcher_phone?: string | null;
   reason?: string | null;
+  // tc11
+  document_id?: number | null;
+  project_name?: string | null;
+  approved_date?: string | null;      // YYYY-MM-DD
+  block_method?: string | null;       // SS/SSS (고속선)
+  equipment_name?: string | null;
+  zep?:  string | null;
+  zcp?:  string | null;
+  cpt?:  string | null;
+  tzep?: string | null;
+  // tc12
+  start_station_name?: string | null;
+  end_station_name?: string | null;
+  // tc13
+  project_id?: number | null;
   note?: string | null;
 }
 
@@ -352,4 +435,40 @@ export interface UserInfo {
   field: UserField;
   organization_id: number | null;
   organization_name: string | null;
+}
+
+// ── 공사/사업 (tc13) ─────────────────────────────────────────────────────────
+
+export interface Project {
+  id: number;
+  name: string;
+  project_type: string;   // 공사 | 유지보수 | 외부 | 기타
+  organization_id: number | null;
+  rail_route_id: number | null;
+  field: string | null;   // 시설 | 전기 | 건축 | all
+  implementer: string;    // 철도공사 | 철도공단 | 외부
+  contractor: string | null;
+  contract_number: string | null;
+  start_date: string | null;   // YYYY-MM-DD
+  end_date: string | null;
+  status: string;          // 계획 | 진행중 | 완료 | 중지
+  description: string | null;
+  created_by: number | null;
+  created_at: string;
+  block_order_count: number | null;
+}
+
+export interface ProjectCreate {
+  name: string;
+  project_type?: string;
+  organization_id?: number | null;
+  rail_route_id?: number | null;
+  field?: string | null;
+  implementer?: string;
+  contractor?: string | null;
+  contract_number?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  status?: string;
+  description?: string | null;
 }
