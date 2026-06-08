@@ -1210,9 +1210,10 @@ def create_rail_facility(
     _ensure_rail_route(db, rail_route_id)
     data = _validate_facility_data(db, body.model_dump())
     data["rail_route_id"] = rail_route_id
-    db.execute(
-        text(
-            """
+    new_id = int(
+        db.execute(
+            text(
+                """
             INSERT INTO rail_facilities (
                 rail_route_id,
                 facility_code,
@@ -1271,14 +1272,14 @@ def create_rail_facility(
             )
             RETURNING id
             """
-        ),
-        data,
-    ).scalar_one()
-    facility_id = int(facility_id)
-    _sync_facility_baseline_points(db, facility_id)
+            ),
+            data,
+        ).scalar_one()
+    )
+    _sync_facility_baseline_points(db, new_id)
     _rebuild_computed_geometry_route(db, rail_route_id)
     db.commit()
-    return _facility_response(db, facility_id)
+    return _facility_response(db, new_id)
 
 
 @router.put("/facilities/{facility_id}")
