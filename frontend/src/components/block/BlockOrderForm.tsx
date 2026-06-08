@@ -76,12 +76,13 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
   const qc = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const isSuperuser = user?.role === 'system_superuser';
+  const isBlockManager = user?.role === 'block_manager';
   const userField = user?.field && user.field !== 'all' ? user.field : null;
   const availableFields = userField ? [userField] : ALL_FIELDS;
 
   const { data: routes = [] } = useQuery({ queryKey: ['routes'], queryFn: fetchRoutes });
   const { data: depots = [] } = useQuery({ queryKey: ['depot-routes'], queryFn: fetchDepotRoutes, staleTime: Infinity });
-  const { data: orgs = [] } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations, enabled: isSuperuser, staleTime: Infinity });
+  const { data: orgs = [] } = useQuery({ queryKey: ['organizations'], queryFn: fetchOrganizations, enabled: isBlockManager, staleTime: Infinity });
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: () => fetchProjects(), staleTime: 60_000 });
 
   const [newProjectName, setNewProjectName] = useState('');
@@ -127,7 +128,7 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
       project_id: initial.project_id ?? null, reason: initial.reason ?? '', note: initial.note ?? '',
     } : {
       ...EMPTY, field: userField ?? ALL_FIELDS[0],
-      organization_id: isSuperuser ? undefined : (user?.organization_id ?? undefined),
+      organization_id: isBlockManager ? undefined : (user?.organization_id ?? undefined),
       ...initialValues,
     }
   );
@@ -146,9 +147,9 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
   }, [routes, initial, isDepot, form.route_id]);
 
   useEffect(() => {
-    if (!isSuperuser && user?.organization_id && !form.organization_id)
+    if (!isBlockManager && user?.organization_id && !form.organization_id)
       setForm((f) => ({ ...f, organization_id: user.organization_id ?? undefined }));
-  }, [isSuperuser, user?.organization_id, form.organization_id]);
+  }, [isBlockManager, user?.organization_id, form.organization_id]);
 
   const [error, setError] = useState('');
 
@@ -431,9 +432,9 @@ export default function BlockOrderForm({ initial, initialValues, onClose }: Prop
             {/* 소속조직 + 분야 — 한 줄 */}
             <Row>
               <L w="w-16">소속조직</L>
-              {isSuperuser ? (
+              {isBlockManager ? (
                 <select value={form.organization_id ?? ''} onChange={(e) => set('organization_id', e.target.value ? Number(e.target.value) : undefined)} className={`${SI} w-52`}>
-                  <option value="">선택 (없음)</option>
+                  <option value="">조직 선택 (필수)</option>
                   {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                 </select>
               ) : (

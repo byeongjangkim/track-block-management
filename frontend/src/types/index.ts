@@ -327,6 +327,9 @@ export interface ParsedRow {
   cpt: string | null;
   tzep: string | null;
   needs_review: boolean;
+  // 조직 자동 감지 (bulk-parse 응답)
+  organization_id: number | null;
+  organization_name: string | null;
 }
 
 // /documents/bulk-parse 응답
@@ -424,7 +427,7 @@ export interface TokenResponse {
   token_type: string;
 }
 
-export type UserRole = 'system_superuser' | 'org_admin' | 'user';
+export type UserRole = 'system_superuser' | 'block_manager' | 'org_admin' | 'user';
 export type UserField = 'all' | '시설' | '전기' | '건축' | null;
 
 export interface UserInfo {
@@ -435,6 +438,7 @@ export interface UserInfo {
   field: UserField;
   organization_id: number | null;
   organization_name: string | null;
+  can_register: boolean;
 }
 
 // ── 공사/사업 (tc13) ─────────────────────────────────────────────────────────

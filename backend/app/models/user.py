@@ -24,5 +24,9 @@ class User(Base):
         Integer, ForeignKey("organizations.id"), nullable=True
     )
 
+    # 차단명령 등록 권한 — org_admin은 항상 True, user는 관리자가 부여
+    # system_superuser는 시스템 관리 전용이므로 False (차단명령 등록 불가)
+    can_register: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
     organization: Mapped["Organization | None"] = relationship(back_populates="users")
     block_orders: Mapped[list["BlockOrder"]] = relationship(back_populates="created_by_user")

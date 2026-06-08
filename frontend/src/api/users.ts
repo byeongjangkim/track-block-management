@@ -9,6 +9,7 @@ export interface UserRecord {
   organization_id: number | null;
   organization_name: string | null;
   is_active: boolean;
+  can_register: boolean;
 }
 
 export interface UserCreate {
@@ -18,6 +19,7 @@ export interface UserCreate {
   role: string;
   field: string | null;
   organization_id: number | null;
+  can_register?: boolean;
 }
 
 export interface UserUpdate {
@@ -27,6 +29,7 @@ export interface UserUpdate {
   organization_id?: number | null;
   password?: string;
   is_active?: boolean;
+  can_register?: boolean;
 }
 
 export async function fetchUsers(): Promise<UserRecord[]> {

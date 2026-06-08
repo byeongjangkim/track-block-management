@@ -362,11 +362,19 @@ _CENTER_ONLY_POINT_TYPES = "('station_center', 'facility_point', 'facility_start
 - **role 판단은 string 비교만** — 불리언 플래그 사용 금지
 - `field` 코드: `all` / `시설` / `전기` / `건축`
 
-| role | 권한 |
-|---|---|
-| `system_superuser` | 전체 CRUD, 크로스-org |
-| `org_admin` | 자기 조직 관할 구간 내 등록 |
-| `user` | 전국 조회 전용 |
+| role | 차단명령 | 조직 제한 | 사용자 관리 | 시스템 설정 |
+|---|---|---|---|---|
+| `system_superuser` | **불가** | 없음 | 전체 | ✓ |
+| `block_manager` | ✓ (전국) | **없음** (organization_id=NULL) | 불가 | ✗ |
+| `org_admin` | ✓ (관할구간) | 자기 조직 | 소속 사용자 | ✗ |
+| `user` | can_register 여부 | 자기 조직 | 불가 | ✗ |
+
+**개발 계정** (`plan.md` 참조):
+
+| 아이디 | 비밀번호 | role |
+|---|---|---|
+| `admin@korail.com` | `korail7788!` | `system_superuser` |
+| `block_manager` | `korail7788!` | `block_manager` |
 
 ### 선로(tracks) 명명
 
@@ -470,6 +478,9 @@ API: `GET/PATCH /api/v1/settings/{category}/{key}`, `POST /api/v1/settings/reset
 | `tc11_block_order_documents` | block_order_documents(PDF BYTEA) · block_order_monitors(열차감시원 복수) · block_orders 추가: document_id / project_name / approved_date / block_method / contractor_phone |
 | `tc12_block_order_stations` | block_orders 추가: start_station_name / end_station_name (차단구간 시작·종료역명) |
 | `tc13_projects` | projects 공사/사업 테이블 신설 · block_orders.project_id FK · GET/POST /api/v1/projects/ |
+| `tc14_can_register` | users.can_register BOOLEAN 추가 · 기존 org_admin → can_register=TRUE |
+| `tc15_block_manager_role` | block_manager 역할 신설 · block_manager 기본 계정 생성 |
+| `tc16_dev_accounts_pw` | 개발 계정 비밀번호 통일 (admin@korail.com, block_manager → korail7788!) |
 
 ---
 

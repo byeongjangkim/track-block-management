@@ -40,8 +40,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const isAdmin      = user?.role === 'org_admin' || user?.role === 'system_superuser';
-  const isSuperuser  = user?.role === 'system_superuser';
+  const isSuperuser   = user?.role === 'system_superuser';
+  const isBlockMgr    = user?.role === 'block_manager';
+  const isOrgAdmin    = user?.role === 'org_admin';
+  // 기준정보 관리: org_admin·block_manager·system_superuser 접근 가능
+  const isAdmin       = isOrgAdmin || isBlockMgr || isSuperuser;
 
   const activeClass  = 'bg-white text-blue-700 font-medium';
   const normalClass  = 'text-blue-100 hover:bg-blue-600';
@@ -83,7 +86,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </>
           )}
 
-          {/* 그룹 3 — 시스템 관리 드롭다운 (superuser) */}
+          {/* 그룹 3-a — 소속 관리 (org_admin 전용: 소속 사용자 관리) */}
+          {isOrgAdmin && (
+            <>
+              <span className="text-blue-500 text-xs mx-1">|</span>
+              <NavLink to="/admin/users"
+                className={({ isActive }) => navCls(isActive, true)}>
+                소속 사용자 관리
+              </NavLink>
+            </>
+          )}
+
+          {/* 그룹 3-b — 시스템 관리 드롭다운 (superuser 전용) */}
           {isSuperuser && (
             <>
               <span className="text-blue-500 text-xs mx-1">|</span>
@@ -130,7 +144,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="flex items-center gap-3 text-sm shrink-0">
-          <span className="text-blue-100 text-xs">{user?.full_name ?? ''}</span>
+          <div className="flex flex-col items-end">
+            <span className="text-blue-100 text-xs">{user?.full_name ?? ''}</span>
+            <span className="text-blue-300 text-[10px]">
+              {user?.role === 'system_superuser' ? '시스템 관리자'
+                : user?.role === 'block_manager' ? '차단명령 관리자'
+                : user?.role === 'org_admin' ? '소속 관리자'
+                : user?.can_register ? '소속 사용자 (등록)'
+                : '소속 사용자'}
+            </span>
+          </div>
           <button
             onClick={handleLogout}
             className="text-xs text-blue-200 hover:text-white border border-blue-500 px-2 py-1 rounded"

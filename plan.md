@@ -1,6 +1,17 @@
 # 개발 계획
 
-> 마지막 갱신: 2026-06-08 (전차선 단전 렌더링 수정 · 역구내 route type 추가 · T번호 상하선 판정 수정)
+> 마지막 갱신: 2026-06-08 (4-role 체계 도입 · PDF 일괄등록 조직 자동감지 · 개발 계정 비밀번호 통일)
+
+---
+
+## 개발 환경 접속 계정
+
+> 아래 계정은 **개발/테스트 전용**입니다. 프로덕션 배포 전 반드시 변경하세요.
+
+| 역할 | 아이디 | 비밀번호 | 용도 |
+|---|---|---|---|
+| 시스템 관리자 (`system_superuser`) | `admin@korail.com` | `korail7788!` | 사용자·시스템 설정 관리 (차단명령 등록 불가) |
+| 차단명령 관리자 (`block_manager`) | `block_manager` | `korail7788!` | 전국 차단명령 등록·수정 (조직 제한 없음) |
 
 ---
 
@@ -9,9 +20,12 @@
 | 구분 | 내용 |
 |---|---|
 | **DB** | PostgreSQL 16 (`track_block`) |
-| DB 스키마 | tc01~tc13 마이그레이션 완료 |
-| 권한/조직 | 14개 조직, 3단계 role, sort_order 정렬, 관할구간 검증 |
+| DB 스키마 | tc01~tc16 마이그레이션 완료 |
+| **권한 체계** | 4-role 체계 (system_superuser / block_manager / org_admin / user) |
+| 사용자 관리 | system_superuser: 전체; org_admin: 소속 org_admin+user 관리 |
+| can_register | user 역할에 등록 권한 플래그 (tc14) |
 | 차단명령 CRUD | 등록/수정/삭제, PDF 일괄 파싱, 연속작업 감지 |
+| **PDF 일괄등록** | 노선+KP+분야로 담당 조직 자동 감지 → 행별 조직 배정 (전국 다중 조직 지원) |
 | 차단명령 확장 | 대표명령 계층(parent_id), T1~T8 고속선 선로, 투입장비, 열차서행, 양단접지, ZEP/ZCP/CPT/TZEP, 작업자 수 |
 | 차단명령 확장 2 | 승인원문 PDF(block_order_documents) · 열차감시원 복수(block_order_monitors) · 승인일자/사업명/차단방법/시공사전화/역명 · 작업내용 |
 | 공사/사업 관리 | projects 테이블 신설, block_orders.project_id FK, 사업명 검색·등록 UI |
@@ -28,7 +42,6 @@
 | 전기시설물 오프셋 표시 | GPS 방향 벡터 기반 facilityOffsetPoint — 최외방 선로 1간격 외방 배치, 2복선·3복선 getTrackCountAtKp 적용, 레이블 name+station_type 대문자 표시 |
 | **차단명령 등록 폼 전면 개선** | 5개 섹션(기본정보·작업구간및일시·투입장비·작업관계자·안전관리), 인라인 1행 레이아웃, SearchableSelect(노선·변전소), 작업선로 단순 버튼, 전차선단전 상시 표시 |
 | **역구내 route type 추가** | routeType: 'line'\|'yard'\|'depot' (역간/역구내/기지 3선택), 역구내 선택 시 역/구역명 텍스트입력 + TrackMultiSelect, KP 선택사항 |
-| **TrackMultiSelect 개선** | "전체" 레이블 제거 → 3개 이하 이름 표시, 4개 이상 "N선 선택", 기지 모드도 전차선 단전 섹션 표시 |
 | **전차선 단전 KP 범위 수정** | `_rail_kp_range_coords` context anchor `kp <= start` → `kp < start` (시작점 자신이 context로 들어가 렌더링에서 소실되는 버그 수정) |
 | **T번호 상하선 판정 수정** | `isUpTrack`/`trackNameToIndex`에 T-트랙 처리 추가 — T1·T3 하선, T2·T4 상선, 중심→외측 배치 |
 | **팝업 전차선 단전 표시** | 블록 상세팝업에 `전차선 단전` 행 추가 (start_rail_facility_id 있는 경우, 초록색) |
@@ -47,7 +60,7 @@
 | 활성 노선 수 | 153개 |
 | 역/KP 포인트 | 1,066개 |
 | 시스템 설정 항목 | 24개 |
-| Alembic 버전 | tc13_projects |
+| Alembic 버전 | tc16_dev_accounts_pw |
 
 ---
 
@@ -68,6 +81,45 @@
 | `tc11` | block_order_documents(PDF BYTEA) · block_order_monitors(열차감시원 복수) · block_orders: document_id / project_name / approved_date / block_method / contractor_phone |
 | `tc12` | block_orders: start_station_name / end_station_name (차단구간 시작·종료역명) |
 | `tc13` | projects 테이블 신설 · block_orders.project_id FK · GET/POST /api/v1/projects/ |
+| `tc14` | users.can_register BOOLEAN 추가 · 기존 org_admin → can_register=TRUE |
+| `tc15` | block_manager 역할 추가 · block_manager 기본 계정 생성 |
+| `tc16` | 개발 계정 비밀번호 통일 (admin@korail.com, block_manager → korail7788!) |
+
+---
+
+## 사용자 역할(Role) 체계
+
+| role | 이름 | 차단명령 | 조직 제한 | 사용자 관리 | 시스템 설정 |
+|---|---|---|---|---|---|
+| `system_superuser` | 시스템 관리자 | **불가** | 없음 | 전체 | ✓ |
+| `block_manager` | 차단명령 관리자 | ✓ (전국) | **없음** | 불가 | ✗ |
+| `org_admin` | 소속 관리자 | ✓ (관할구간) | 자기 조직 | 소속 org_admin·user | ✗ |
+| `user` | 소속 사용자 | can_register 여부 | 자기 조직 | 불가 | ✗ |
+
+### block_manager 특이사항
+
+- `organization_id = NULL` (어느 조직에도 소속되지 않음)
+- 차단명령 등록 시 `block_orders.organization_id`는 행별 자동 감지 또는 수동 지정
+- PDF 일괄 등록: `bulk-parse` 응답의 각 행에 `organization_id`/`organization_name` 자동 포함
+  - 자동감지 기준: `organization_route_ranges` (rail_route_id + start_km + field 매칭)
+  - 감지 우선순위: 분야 일치 → `'all'` 범위
+  - 감지 실패 행: Step 2 테이블에서 빨간 셀로 표시, 직접 선택 필요
+- `can_register = TRUE` 고정
+
+### PDF 일괄등록 프로세스 (block_manager)
+
+```
+Step 1: 파일 선택 (시행문 PDF / 세부내역 PDF)
+        → 조직 선택 없음 (이 단계에서 조직 결정 불필요)
+
+Step 2: 파싱 결과 확인
+        → 각 행에 "등록 조직" 컬럼 표시
+        → 노선+KP 기준 자동 감지된 조직 드롭다운에 표시
+        → 감지 실패(빨간 셀): 직접 선택 필요
+        → 조직 미지정 행 있으면 저장 버튼 비활성화
+
+Step 3: 저장 결과 확인
+```
 
 ---
 
@@ -81,6 +133,8 @@
 - **대표명령 UI** — 차단명령 목록에서 대표명령/하위작업 계층 시각화
 - **투입 장비 심볼** — 노선도에 장비 위치 표시
 - **기준정보 관리 — 시설물 탭** — FacilitiesAdminPage 2단계 뷰 (현재 1단계)
+- **block_type 통일** — `'보호지구 작업'`(폼) ↔ `'보호지구작업'`(렌더링) 공백 불일치 해소
+- **열차사이 차단** — VALID_BLOCK_TYPES 및 렌더링 규칙 추가 필요
 
 ### 추후 구현
 - 기지 노선 선로 다중 선택
@@ -90,6 +144,26 @@
 ---
 
 ## 주요 아키텍처 결정 이력
+
+### 4-role 체계 도입 (2026-06-08, tc14/tc15)
+
+- **결정**: 기존 3-role(system_superuser / org_admin / user) → 4-role (block_manager 신설)
+- **근거**: system_superuser가 차단명령 등록·전국 PDF 일괄등록을 겸하는 구조는 역할 분리 원칙 위반
+  - system_superuser: 시스템 관리 전용 (차단명령 등록 불가)
+  - block_manager: 전국 차단명령 등록·관리 전용 (조직 소속 없음)
+- **DB 변경**: `users.can_register BOOLEAN` 추가 (tc14), block_manager 계정 생성 (tc15)
+- **프론트 변경**: 역할별 메뉴·버튼 가시성, UsersAdminPage 4-role 지원
+
+### PDF 일괄등록 조직 자동감지 (2026-06-08)
+
+- **결정**: block_manager의 PDF 일괄등록 시 Step 1에서 단일 조직 선택 → 폐기
+- **근거**: 시행문서 한 장에 전국 여러 조직 관할 구간의 차단명령이 혼재 가능
+- **구현**:
+  - `bulk-parse` 엔드포인트에 DB 조회 추가: 파싱 후 각 행에 `organization_id`/`organization_name` 주입
+  - 조회 기준: `organization_route_ranges` 테이블 (rail_route_id + start_km + field)
+  - Step 2 테이블에 "등록 조직" 컬럼 추가, 자동감지값 표시, 수정 가능
+  - 저장 시 행별 `organization_id` 전송 (기존: 전체 공용 1개)
+- **주의**: `organization_route_ranges.field = 'all'`인 행정 경계는 모든 분야에 매칭됨 (우선순위 낮음)
 
 ### DB: PostgreSQL 16 (2026-06-05)
 - **결정**: PostgreSQL 16 (Homebrew) 단독 운영

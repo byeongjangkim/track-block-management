@@ -30,8 +30,12 @@ export default function BlockOrdersPage() {
   const navigate = useNavigate();
 
   // 역할 기반 권한
-  const canRegister = user?.role === 'org_admin' || user?.role === 'system_superuser';
+  const canRegister =
+    user?.role === 'block_manager' ||
+    user?.role === 'org_admin' ||
+    (user?.role === 'user' && user.can_register === true);
   const isSuperuser = user?.role === 'system_superuser';
+  const isBlockManager = user?.role === 'block_manager';
 
   // 입력 중인 필터 (아직 API에 반영 안 됨)
   const [inputRouteId, setInputRouteId]   = useState<number | ''>('');
@@ -62,7 +66,6 @@ export default function BlockOrdersPage() {
   const { data: organizations = [] } = useQuery({
     queryKey: ['organizations'],
     queryFn: fetchOrganizations,
-    enabled: isSuperuser,
   });
 
   const { data: orders = [], isLoading } = useQuery({
@@ -98,8 +101,9 @@ export default function BlockOrdersPage() {
   }, [orders, filterDangerLevel, appliedDocNo]);
 
   function canEdit(order: BlockOrder) {
-    if (isSuperuser) return true;
+    if (user?.role === 'block_manager') return true;
     if (user?.role === 'org_admin' && order.organization_id === user.organization_id) return true;
+    if (user?.role === 'user' && user.can_register && order.organization_id === user.organization_id) return true;
     return false;
   }
 
@@ -455,6 +459,7 @@ export default function BlockOrdersPage() {
       {showPdfImport && (
         <PdfImportModal
           routes={routes}
+          organizations={isBlockManager ? organizations : undefined}
           defaultOrgId={user?.organization_id ?? undefined}
           onClose={() => setShowPdfImport(false)}
           onSaved={(count) => {

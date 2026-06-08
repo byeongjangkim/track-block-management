@@ -6,6 +6,8 @@ import type { ParsedRow, BulkBlockOrderItem, TrackName } from '../../types';
 
 interface Props {
   routes: { id: number; name: string }[];
+  // block_manager에게만 전달 — 행별 조직 드롭다운에서 사용
+  organizations?: { id: number; name: string }[];
   defaultOrgId?: number;
   onClose: () => void;
   onSaved: (count: number) => void;
@@ -30,18 +32,24 @@ interface EditableRow extends ParsedRow {
   _id: number;
   selected: boolean;
   route_id: number | '';
+  // 조직 (자동 감지 or 수동 선택)
+  org_id: number | null;
+  org_name: string | null;
 }
 
 let _rowIdCounter = 0;
 function nextId() { return ++_rowIdCounter; }
 
-export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved }: Props) {
+export default function PdfImportModal({ routes, organizations, defaultOrgId, onClose, onSaved }: Props) {
   const qc = useQueryClient();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [detailFile, setDetailFile] = useState<File | null>(null);
   const [selectedRouteName, setSelectedRouteName] = useState('');
+
+  // block_manager 여부: organizations prop이 있으면 block_manager
+  const isBlockManager = !!(organizations && organizations.length > 0);
 
   const coverInputRef = useRef<HTMLInputElement>(null);
   const detailInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +100,9 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
         selected: !row.needs_review,
         route_id: routeIdByName(row.route_name || finalRouteName),
         route_name: row.route_name || finalRouteName,
+        // 자동 감지 조직 (block_manager: 행별 재지정 가능, 기타: defaultOrgId 사용)
+        org_id: isBlockManager ? (row.organization_id ?? null) : (defaultOrgId ?? null),
+        org_name: isBlockManager ? (row.organization_name ?? null) : null,
       }));
 
       setRows(editableRows);
@@ -123,6 +134,15 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
     const selected = rows.filter((r) => r.selected);
     if (selected.length === 0) return;
 
+    // block_manager: 행별 조직 지정 여부 검사
+    if (isBlockManager) {
+      const missingOrg = selected.filter((r) => !r.org_id);
+      if (missingOrg.length > 0) {
+        alert(`${missingOrg.length}건에 등록 조직이 지정되지 않았습니다. 조직을 선택한 후 저장하세요.`);
+        return;
+      }
+    }
+
     // 필수값 검사:
     // - km 없음은 section_note(전차선 단전 구간명) 또는 start_station_name(역간구간)이 있으면 허용
     const invalid = selected.filter(
@@ -147,7 +167,7 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
 
       const items: BulkBlockOrderItem[] = selected.map((r) => ({
         route_id: r.route_id as number,
-        organization_id: defaultOrgId,
+        organization_id: (r.org_id ?? defaultOrgId) as number,
         tracks: r.tracks?.length ? r.tracks : ['상선'],
         start_km: r.start_km ?? null,
         end_km: r.end_km ?? null,
@@ -216,6 +236,7 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
   };
 
   const selectedCount = rows.filter((r) => r.selected).length;
+  const missingOrgCount = isBlockManager ? rows.filter((r) => r.selected && !r.org_id).length : 0;
 
   // 구간 표시: 역간구간(시작역~종료역) 또는 단전구간(section_note)
   function sectionDisplay(row: EditableRow): string {
@@ -294,6 +315,13 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                 </div>
               )}
 
+              {/* block_manager 안내: 조직은 파싱 후 행별로 자동 감지됨 */}
+              {isBlockManager && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-xs text-blue-700">
+                  차단명령 관리자 모드: 노선·KP 기준으로 담당 조직이 자동 감지됩니다. 다음 단계에서 행별로 확인 후 수정할 수 있습니다.
+                </div>
+              )}
+
               <div className="flex items-center gap-3">
                 <span className="text-sm text-gray-600 whitespace-nowrap">노선 확인</span>
                 <div className="relative">
@@ -357,6 +385,9 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                     <thead className="bg-gray-50 text-gray-500">
                       <tr>
                         <th className="px-2 py-2 text-center w-8">☑</th>
+                        {isBlockManager && (
+                          <th className="px-2 py-2 text-left min-w-32">등록 조직</th>
+                        )}
                         <th className="px-2 py-2 text-left">노선</th>
                         <th className="px-2 py-2 text-left">선로</th>
                         <th className="px-2 py-2 text-left">차단종류</th>
@@ -381,6 +412,32 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                           <td className="px-2 py-1 text-center">
                             <input type="checkbox" checked={row.selected} onChange={() => toggleRow(row._id)} />
                           </td>
+
+                          {/* 등록 조직 (block_manager 전용) */}
+                          {isBlockManager && (
+                            <td className={`px-1 py-1 ${!row.org_id ? 'border border-red-400 bg-red-50' : ''}`}>
+                              <div className="relative">
+                                <select
+                                  value={row.org_id ?? ''}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const org = organizations!.find((o) => o.id === Number(val));
+                                    updateRow(row._id, {
+                                      org_id: val ? Number(val) : null,
+                                      org_name: org?.name ?? null,
+                                    });
+                                  }}
+                                  className={`w-28 h-7 border-0 bg-transparent text-xs focus:outline-none appearance-none cursor-pointer pr-4 ${!row.org_id ? 'text-red-500' : 'text-gray-700'}`}
+                                >
+                                  <option value="">조직 선택</option>
+                                  {organizations!.map((o) => (
+                                    <option key={o.id} value={o.id}>{o.name}</option>
+                                  ))}
+                                </select>
+                                <span className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-gray-400 text-xs">▾</span>
+                              </div>
+                            </td>
+                          )}
 
                           {/* 노선 */}
                           <td className={`px-1 py-1 ${needsClass(row, 'route_id')}`}>
@@ -583,6 +640,11 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
                   ⚠ 주황색 행은 선로·km 등 확인이 필요합니다. 수정 후 저장하거나 체크 해제하세요.
                 </div>
               )}
+              {isBlockManager && missingOrgCount > 0 && (
+                <div className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">
+                  ⚠ {missingOrgCount}건의 등록 조직이 지정되지 않았습니다. 노선+KP 자동 감지에 실패한 행입니다. 직접 선택하거나 체크 해제하세요.
+                </div>
+              )}
             </div>
           )}
 
@@ -615,13 +677,20 @@ export default function PdfImportModal({ routes, defaultOrgId, onClose, onSaved 
           {step === 2 && (
             <>
               <button onClick={() => setStep(1)} className="text-sm text-gray-500 hover:text-gray-700">← 이전</button>
-              <button
-                onClick={handleSave}
-                disabled={selectedCount === 0 || isSaving}
-                className="px-5 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-40"
-              >
-                {isSaving ? '저장 중...' : `선택 항목 저장 (${selectedCount}건)`}
-              </button>
+              <div className="flex items-center gap-3">
+                {missingOrgCount > 0 && (
+                  <span className="text-xs text-red-600">
+                    조직 미지정 {missingOrgCount}건 — 저장 전 조직을 선택하세요
+                  </span>
+                )}
+                <button
+                  onClick={handleSave}
+                  disabled={selectedCount === 0 || isSaving || missingOrgCount > 0}
+                  className="px-5 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-40"
+                >
+                  {isSaving ? '저장 중...' : `선택 항목 저장 (${selectedCount}건)`}
+                </button>
+              </div>
             </>
           )}
           {step === 3 && (

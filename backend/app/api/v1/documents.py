@@ -4,12 +4,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.deps import get_current_user, get_db, require_org_admin
 from app.models.block_order import BlockOrder
 from app.models.block_order_document import BlockOrderDocument
+from app.models.rail_baseline import RailRoute
 from app.models.user import User
 from app.schemas.block_order import BlockOrderDocumentResponse
 from app.services.pdf_parser_service import (
@@ -23,6 +25,42 @@ router = APIRouter(prefix="/documents", tags=["문서"])
 
 ALLOWED_CONTENT_TYPES = {"application/pdf"}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
+
+
+def _detect_org_for_row(
+    db: Session, route_name: str | None, start_km: float | None, field: str | None
+) -> tuple[int | None, str | None]:
+    """노선명 + 기준KP + 분야로 담당 조직 자동 감지. (조직id, 조직명) 반환."""
+    if not route_name:
+        return None, None
+    kp = start_km
+    if kp is None:
+        return None, None
+
+    rail_route = db.query(RailRoute).filter(RailRoute.name == route_name).first()
+    if not rail_route:
+        return None, None
+
+    row = db.execute(
+        text("""
+            SELECT o.id, o.name
+            FROM organization_route_ranges orr
+            JOIN organizations o ON o.id = orr.organization_id
+            WHERE orr.rail_route_id = :route_id
+              AND orr.start_km <= :kp
+              AND orr.end_km >= :kp
+            ORDER BY
+              CASE WHEN orr.field = :field THEN 0
+                   WHEN orr.field = 'all'  THEN 1
+                   ELSE 2 END
+            LIMIT 1
+        """),
+        {"route_id": rail_route.id, "kp": kp, "field": field or "all"},
+    ).fetchone()
+
+    if row:
+        return row.id, row.name
+    return None, None
 
 
 @router.post("/upload/{order_id}")
@@ -83,6 +121,7 @@ async def bulk_parse_pdf(
     cover_file: Optional[UploadFile] = File(None),
     detail_file: Optional[UploadFile] = File(None),
     route_name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
     _: User = Depends(require_org_admin),
 ):
     """
@@ -93,6 +132,7 @@ async def bulk_parse_pdf(
     - route_name:  사용자가 확인/선택한 노선명 (Step1에서 전달)
 
     두 파일 중 하나만 업로드해도 동작하며, 결과를 병합해 반환한다.
+    각 행에 organization_id/organization_name이 자동 감지되어 포함된다.
     DB 저장 없음 — 프론트엔드에서 검토 후 /block-orders/bulk로 저장.
     """
     if not cover_file and not detail_file:
@@ -120,7 +160,22 @@ async def bulk_parse_pdf(
             raise HTTPException(status_code=400, detail="세부내역 파일이 20MB를 초과합니다")
         detail_result = parse_detail_pdf(content, route_name=route_name)
 
-    return merge_parse_results(cover_result, detail_result, route_name=route_name)
+    result = merge_parse_results(cover_result, detail_result, route_name=route_name)
+
+    # 노선+KP+분야로 담당 조직 자동 감지 — 각 행에 organization_id/organization_name 추가
+    resolved_route = result.get("route_name") or route_name
+    for row in result.get("rows", []):
+        row_route = row.get("route_name") or resolved_route
+        org_id, org_name = _detect_org_for_row(
+            db,
+            route_name=row_route,
+            start_km=row.get("start_km"),
+            field=row.get("field"),
+        )
+        row["organization_id"] = org_id
+        row["organization_name"] = org_name
+
+    return result
 
 
 @router.get("/{filename}")

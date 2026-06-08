@@ -35,14 +35,21 @@ def get_current_user(
 
 
 def require_org_admin(current_user: User = Depends(get_current_user)) -> User:
-    """org_admin 이상 접근 허용. 세부 분야·구간 검증은 서비스 레이어에서 수행."""
-    if current_user.role not in ("org_admin", "system_superuser"):
+    """기준정보 관리 등: org_admin / block_manager / system_superuser 허용."""
+    if current_user.role not in ("org_admin", "block_manager", "system_superuser"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자 권한이 필요합니다")
     return current_user
 
 
 def require_superuser(current_user: User = Depends(get_current_user)) -> User:
-    """system_superuser 전용."""
+    """시스템 설정 전용: system_superuser만 허용."""
     if current_user.role != "system_superuser":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="최상위 관리자 권한이 필요합니다")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="시스템 관리자 권한이 필요합니다")
+    return current_user
+
+
+def require_user_admin(current_user: User = Depends(get_current_user)) -> User:
+    """사용자 관리: system_superuser(전체) 또는 org_admin(소속 조직 한정)."""
+    if current_user.role not in ("system_superuser", "org_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="사용자 관리 권한이 없습니다")
     return current_user

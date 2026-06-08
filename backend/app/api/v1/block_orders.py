@@ -260,17 +260,23 @@ def create_block_order(
         block_type=data.get("block_type", ""),
     )
 
-    # organization_id: system_superuser는 body에서, org_admin은 자기 조직
-    org_id = (
-        body.organization_id
-        if current_user.role == "system_superuser" and body.organization_id is not None
-        else current_user.organization_id
-    )
-    if org_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="organization_id가 지정되지 않았습니다 (system_superuser는 organization_id 필수)",
-        )
+    # organization_id 결정:
+    #   block_manager: body에서 지정 (전국 등록 가능 → 어느 조직 소속인지 명시 필요)
+    #   org_admin/user: 자기 조직 고정
+    if current_user.role == "block_manager":
+        org_id = body.organization_id
+        if org_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="차단명령 관리자는 organization_id(소속 조직)를 반드시 지정해야 합니다",
+            )
+    else:
+        org_id = current_user.organization_id
+        if org_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="소속 조직이 없어 차단명령을 등록할 수 없습니다",
+            )
 
     order = BlockOrder(
         **{k: v for k, v in data.items() if k != "organization_id"},
@@ -394,11 +400,27 @@ class BulkBlockOrderItem(BaseModel):
     electric_safety_manager: str | None = None
     electric_safety_manager_phone: str | None = None
     contractor: str | None = None
+    contractor_phone: str | None = None     # tc11
     train_watcher: str | None = None
     train_watcher_phone: str | None = None
     reason: str | None = None
     track_name: str | None = None
     note: str | None = None
+    # tc11
+    project_name: str | None = None
+    approved_date: date | None = None
+    block_method: str | None = None
+    equipment_name: str | None = None
+    # tc12
+    start_station_name: str | None = None
+    end_station_name: str | None = None
+    # tc13
+    project_id: int | None = None
+    # 고속선 보호코드
+    zep:  str | None = None
+    zcp:  str | None = None
+    cpt:  str | None = None
+    tzep: str | None = None
 
 
 class BulkBlockOrderResult(BaseModel):
@@ -439,23 +461,29 @@ def bulk_create_block_orders(
                 block_type=data.get("block_type", ""),
             )
 
-            org_id = (
-                item.organization_id
-                if current_user.role == "system_superuser" and item.organization_id is not None
-                else current_user.organization_id
-            )
+            # block_manager: item에서 organization_id 지정 필수
+            # org_admin/user: 자기 조직 고정
+            if current_user.role == "block_manager":
+                org_id = item.organization_id
+                if org_id is None:
+                    raise ValueError(
+                        "차단명령 관리자는 organization_id(소속 조직)를 반드시 지정해야 합니다"
+                    )
+            else:
+                org_id = current_user.organization_id
+                if org_id is None:
+                    raise ValueError("소속 조직이 없어 차단명령을 등록할 수 없습니다")
 
             # "HH:MM" → time 객체 변환
             def _to_time(s: str) -> time_type:
                 parts = s.split(':')
                 return time_type(int(parts[0]), int(parts[1]))
 
-            import json as _json
             order = BlockOrder(
                 route_id=data.get("route_id"),
                 rail_route_id=data.get("rail_route_id"),
                 organization_id=org_id,
-                tracks=_json.dumps(data["tracks"], ensure_ascii=False),
+                tracks=data["tracks"],  # _prepare_block_order_data에서 이미 JSON 직렬화
                 start_km=data.get("start_km"),
                 end_km=data.get("end_km"),
                 start_kp=data.get("start_kp"),
@@ -481,10 +509,26 @@ def bulk_create_block_orders(
                 electric_safety_manager=item.electric_safety_manager,
                 electric_safety_manager_phone=item.electric_safety_manager_phone,
                 contractor=item.contractor,
+                contractor_phone=item.contractor_phone,
                 train_watcher=item.train_watcher,
                 train_watcher_phone=item.train_watcher_phone,
                 reason=item.reason,
                 note=item.note,
+                # tc11
+                project_name=item.project_name,
+                approved_date=item.approved_date,
+                block_method=item.block_method,
+                equipment_name=item.equipment_name,
+                # tc12
+                start_station_name=item.start_station_name,
+                end_station_name=item.end_station_name,
+                # tc13
+                project_id=item.project_id,
+                # 고속선 보호코드
+                zep=item.zep,
+                zcp=item.zcp,
+                cpt=item.cpt,
+                tzep=item.tzep,
                 created_by=current_user.id,
             )
             db.add(order)
@@ -494,7 +538,15 @@ def bulk_create_block_orders(
             errors.append(f"{row_label}: {exc}")
 
     if saved > 0:
-        db.commit()
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            return BulkBlockOrderResult(
+                saved=0,
+                failed=len(body),
+                errors=[f"DB 커밋 실패 (전체 롤백): {exc}"],
+            )
 
     return BulkBlockOrderResult(saved=saved, failed=failed, errors=errors)
 
