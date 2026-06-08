@@ -2,6 +2,32 @@
 
 ---
 
+## ❌ 절대 금지 — 재발 방지 규칙
+
+### 1. `index.html` viewport 수정 금지
+```html
+<!-- 현재 설정 — 절대 변경하지 말 것 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+```
+**이유**: Mac 트랙패드 핀치 확대 시 브라우저 전체 페이지가 줌됨.  
+사이드바 포함 전체 UI가 확대된 채 고정되고, D3 맵 스크롤 축소로는 사이드바가 복구되지 않음.  
+`user-scalable=no`/`maximum-scale=1.0`이 없으면 이 현상이 재발한다.  
+**→ `initial-scale=1.0`으로 되돌리거나 단순화하는 것 절대 금지.**
+
+### 2. 새 역할(role) 추가 시 BlockMapPage.tsx 조건 동시 수정 필수
+```typescript
+// BlockMapPage.tsx — 역할 조건 (신규 role 추가 시 반드시 검토)
+const isSuperuser    = user?.role === 'system_superuser';
+const isBlockManager = user?.role === 'block_manager';
+const isOrgSelector  = isSuperuser || isBlockManager; // 조직 선택 드롭다운 대상
+const isOrgUser      = !isOrgSelector && user?.organization_id != null;
+```
+**이유**: `block_manager`는 `organization_id=null`이므로 기존 `isSuperuser`/`isOrgUser` 조건을
+모두 만족하지 못해 "전국 조망/지역본부 선택" 드롭다운이 사라지는 버그가 발생했음.  
+**→ 새 역할 추가 시 반드시 이 파일의 역할 분기 전체를 검토할 것.**
+
+---
+
 ## 설계 원칙
 
 - **사내망 PC 우선** (1280px 이상), 모바일 미지원
