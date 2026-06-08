@@ -1,7 +1,7 @@
 # 선로차단작업 관리 — Ubuntu 서버 배포 가이드
 
 > **대상 환경**: Ubuntu 서버, Docker Compose, team-work-manager 동일 IP 공존  
-> **최종 갱신**: 2026-06-08 | Alembic 버전: `tc16_dev_accounts_pw`
+> **최종 갱신**: 2026-06-08 (기준데이터: reference_data_20260608_171700.sql) | Alembic 버전: `tc16_dev_accounts_pw` (head)
 
 ---
 
