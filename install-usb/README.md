@@ -1,250 +1,249 @@
 # 선로차단작업 관리 — Ubuntu 서버 배포 가이드
 
-> **대상 환경**: Ubuntu 서버, Docker Compose, team-work-manager 동일 IP 공존
+> **대상 환경**: Ubuntu 서버, Docker Compose, team-work-manager 동일 IP 공존  
+> **최종 갱신**: 2026-06-08 | Alembic 버전: `tc16_dev_accounts_pw`
 
 ---
 
-## 0. 사전 요구사항 (서버)
+## ★ AI에게 최신화 요청 시 수행 절차 ★
+
+> 사용자가 **"install-usb 파일을 현재 작업중인 파일과 같이 최신화 하세요"** 라고 요청하면
+> AI는 아래 체크리스트를 **순서대로 자동 수행**합니다.
+
+### [AI 자동 수행] 최신화 체크리스트
+
+```
+Step 1. 기준데이터 덤프 생성 (DB 접근 필요)
+        bash backend/scripts/dump_reference_data.sh
+        → backend/scripts/dumps/reference_data_<날짜>.sql 생성
+
+Step 2. 최신 덤프를 install-usb/seed/ 로 복사
+        cp backend/scripts/dumps/reference_data_<최신>.sql install-usb/seed/
+        (기존 .sql 파일이 있으면 삭제 후 교체)
+
+Step 3. README.md 상단 "최종 갱신" 날짜 및 Alembic 버전 갱신
+        alembic current → 결과값으로 업데이트
+
+Step 4. .env.template 동기화
+        backend/.env.example 또는 app/core/config.py의 새 환경변수가 있으면 반영
+
+Step 5. Dockerfile 의존성 확인
+        backend/requirements.txt 변경 → Dockerfile.backend 자동 반영 (COPY 방식)
+        frontend/package.json 변경  → Dockerfile.frontend 자동 반영 (COPY 방식)
+        → 변경 없으면 패스
+
+Step 6. install-usb 파일 변경 커밋 제안
+        (seed/*.sql 제외 — gitignore 대상)
+```
+
+### [사용자 수동] USB 최종 복사
 
 ```bash
-# Docker 엔진 설치 (Ubuntu 22.04/24.04)
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # 재로그인 필요
-
-# Docker Compose V2 확인
-docker compose version   # v2.x 이상
-
-# 포트 방화벽 (모드 A만 필요)
-sudo ufw allow 8080/tcp
+# Mac 터미널에서 실행
+cd <프로젝트루트>
+bash install-usb/scripts/prepare-usb.sh /Volumes/<USB드라이브이름>
 ```
 
 ---
 
 ## 1. 배포 모드 선택
 
-| 항목 | 모드 A (독립 포트 / 권장) | 모드 B (nginx 경로 통합) |
+| 항목 | **모드 A** (독립 포트 / 권장) | **모드 B** (nginx 경로 통합) |
 |---|---|---|
-| **접속 주소** | `http://10.10.10.10:8080` | `http://10.10.10.10/track` |
-| **포트 충돌** | 없음 (8080 사용) | 없음 (80 공유, 경로 구분) |
-| **team-work-manager 수정** | **불필요** | nginx 설정 추가 필요 |
-| **설정 난이도** | ★☆☆ 단순 | ★★☆ 중간 |
-| **HTTPS** | 별도 SSL 설정 필요 | 기존 nginx SSL 공유 가능 |
-| **권장 상황** | 초기 배포 / 빠른 테스트 | HTTPS URL 통일 필요 시 |
+| **접속 주소** | `http://서버IP:8080` | `http://서버IP/track` |
+| **포트 충돌** | 없음 (8080 신규 사용) | 없음 (경로 분기) |
+| **team-work-manager 수정** | **불필요** | nginx location 블록 추가 필요 |
+| **설정 난이도** | ★☆☆ | ★★☆ |
+| **HTTPS** | 별도 처리 | 기존 nginx SSL 공유 가능 |
 
 ---
 
 ## 2. USB 준비 (Mac에서)
 
+> AI 최신화 후 아래 스크립트 한 번 실행으로 완료됩니다.
+
 ```bash
 cd <프로젝트루트>
-
-# 기준데이터 최신 덤프 생성
-bash backend/scripts/dump_reference_data.sh
-
-# 최신 덤프를 seed 폴더로 복사
-LATEST=$(ls -t backend/scripts/dumps/reference_data_*.sql | head -1)
-cp "$LATEST" install-usb/seed/
-
-# USB로 전체 프로젝트 복사 (node_modules 제외)
-rsync -av --exclude='node_modules' --exclude='__pycache__' \
-          --exclude='.git' --exclude='*.pyc' \
-          . /Volumes/<USB드라이브>/track-block-management/
+bash install-usb/scripts/prepare-usb.sh /Volumes/<USB드라이브이름>
 ```
+
+`prepare-usb.sh`가 수행하는 작업:
+1. 기준데이터 최신 덤프 생성 (`dump_reference_data.sh`)
+2. 덤프를 `install-usb/seed/`에 복사
+3. 프로젝트 전체를 USB로 rsync (node_modules, .git, *.pyc 제외)
 
 ---
 
-## 3. 서버 설치 절차
+## 3. 서버 설치 — 원클릭 (install.sh)
 
 ### 3-1. USB에서 서버로 복사
 
 ```bash
-# USB를 서버에 마운트 후
+# USB 마운트 후 서버에 복사
 sudo mkdir -p /opt/track-block-management
-sudo cp -r /media/<USB마운트>/track-block-management/. /opt/track-block-management/
+sudo rsync -av /media/<사용자>/<USB이름>/track-block-management/. \
+               /opt/track-block-management/
 sudo chown -R $USER:$USER /opt/track-block-management
+```
 
+### 3-2. 원클릭 설치
+
+```bash
 cd /opt/track-block-management/install-usb
+bash install.sh
 ```
 
-### 3-2. 환경변수 설정
+`install.sh`는 대화형으로 진행됩니다:
+- Docker / Docker Compose 설치 여부 자동 감지
+- `.env` 없으면 템플릿 기반 대화형 설정
+- 이미지 빌드 → 컨테이너 시작 → Alembic 자동 마이그레이션
+- seed/*.sql 존재 시 기준데이터 자동 복원
+- 완료 후 접속 주소 안내
+
+### 3-3. 비대화형 설치 (자동화 배포)
 
 ```bash
-cp .env.template .env
-nano .env    # 또는 vi .env
-```
-
-**반드시 변경할 값**:
-
-```bash
-DB_PASSWORD=안전한비밀번호입력       # DB 비밀번호
-SECRET_KEY=$(openssl rand -hex 32)  # JWT 서명키
-
-# 모드 A:
-EXPOSE_PORT=8080
-VITE_API_URL=http://10.10.10.10:8080   # 실제 서버 IP로 변경!
-
-# 모드 B:
-# EXPOSE_PORT=                          # 비워두기
-# VITE_BASE_PATH=/track/
-# VITE_API_URL=                         # 비워두기 (상대경로 사용)
-```
-
-### 3-3. 배포 실행
-
-```bash
-# 모드 A (독립 포트)
-bash scripts/deploy.sh --mode a --seed
-
-# 모드 B (nginx 통합)
-bash scripts/deploy.sh --mode b --seed
+# .env 먼저 작성 후 실행
+bash install.sh --yes --mode a
 ```
 
 ---
 
-## 4. 기준데이터 복원 (--seed 포함 시 자동)
+## 4. 업데이트 배포
 
 ```bash
-# 수동 실행 시
-bash scripts/restore-seed.sh
+cd /opt/track-block-management/install-usb
+
+# USB에서 최신 소스 복사 후
+bash install.sh --update
 ```
 
-복원 내용:
-- 시군구 배경 지도 (rail_computed_geometry)
-- 전국 153개 노선 + 역/KP/시설물
-- 14개 조직 + 관할구간
-- 시스템 설정 (색상 22개 + 지도설정 2개)
-
-> **사용자 데이터는 복원하지 않습니다.** 배포 완료 후 관리자 계정으로 로그인하면 됩니다.
->
-> 기본 계정: `admin@korail.com` / `korail7788!` (배포 후 반드시 변경)
+업데이트 시 수행 작업:
+- 이미지 재빌드 (소스 변경 반영)
+- db 컨테이너 유지 (데이터 보존)
+- backend → frontend 순서 교체 (무중단)
+- Alembic 자동 마이그레이션 (새 revision 적용)
+- 기준데이터 덮어쓰지 않음 (운영 데이터 보존)
 
 ---
 
-## 5. 모드 B 추가 작업 (nginx 통합)
-
-모드 B 선택 시 기존 team-work-manager nginx에 설정을 추가해야 합니다.
-
-### 5-1. Docker 네트워크 연결
+## 5. 모드 B 추가 작업 (nginx 경로 통합)
 
 ```bash
-# tbm-net과 기존 nginx가 통신할 수 있도록 연결
+# 1. tbm-net과 기존 nginx 컨테이너 연결
 docker network connect tbm-net <기존_nginx_컨테이너명>
 
-# 컨테이너명 확인 방법
+# 2. nginx location 블록 추가
+docker cp nginx/integrated.conf <nginx_컨테이너명>:/etc/nginx/conf.d/track.conf
+docker exec <nginx_컨테이너명> nginx -t && \
+docker exec <nginx_컨테이너명> nginx -s reload
+
+# 컨테이너 목록 확인
 docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
 ```
 
-### 5-2. nginx 설정 추가
+---
 
-```bash
-# 방법 1: 기존 nginx 컨테이너에 직접 복사
-docker cp nginx/integrated.conf <nginx_컨테이너명>:/etc/nginx/conf.d/track.conf
-docker exec <nginx_컨테이너명> nginx -t
-docker exec <nginx_컨테이너명> nginx -s reload
+## 6. 기본 계정 (배포 후 변경 필수)
 
-# 방법 2: volume mount 방식 (nginx conf.d 폴더에 직접 복사)
-# nginx 컨테이너의 conf.d 볼륨 경로 확인 후 복사
+| 역할 | 아이디 | 비밀번호 |
+|---|---|---|
+| 시스템 관리자 | `admin@korail.com` | `korail7788!` |
+| 차단명령 관리자 | `block_manager` | `korail7788!` |
+
+> Alembic 마이그레이션(tc16)에서 자동 생성됩니다. 배포 직후 반드시 변경하세요.
+
+---
+
+## 7. 데이터 처리 원칙
+
+| 데이터 종류 | 저장 위치 | 처리 방법 |
+|---|---|---|
+| 시군구 지도·노선·역·시설물 | seed/*.sql | AI 최신화 → USB → restore-seed.sh |
+| 조직·관할구간·시스템설정 | seed/*.sql | 동일 |
+| 사용자 정보 | Docker volume (tbm-db-data) | 마이그레이션으로 기본계정 자동 생성, 추가는 관리자 UI |
+| 차단명령 운영 데이터 | Docker volume (tbm-db-data) | 업데이트 시 보존, 별도 백업 권장 |
+| PDF 업로드 파일 | Docker volume (tbm-uploads) | 업데이트 시 보존 |
+| Alembic 마이그레이션 | 소스코드 포함 | 엔트리포인트에서 `upgrade head` 자동 실행 |
+
+---
+
+## 8. PostgreSQL 충돌 방지
+
+```
+team-work-manager DB: 해당 앱의 DB명 (예: teamwork)
+track-block DB:       track_block
+→ 동일 PostgreSQL 컨테이너라도 DB명이 달라 충돌 없음
+
+alembic_version 테이블: 각 DB에 독립 존재 → 마이그레이션 버전 충돌 없음
+
+외부 포트: tbm-db는 외부 5432 미노출 (Docker 내부망만 사용)
+→ team-work-manager postgres와 포트 충돌 없음
 ```
 
 ---
 
-## 6. 업데이트 배포 (코드 변경 시)
+## 9. 운영 데이터 백업
+
+```bash
+# 전체 백업 (차단명령 포함)
+docker exec tbm-db pg_dump -U tbm track_block \
+    > /backup/tbm_full_$(date +%Y%m%d_%H%M%S).sql
+
+# 기준데이터만 백업
+docker exec tbm-db pg_dump -U tbm track_block --data-only \
+    --table=organizations --table=rail_routes --table=rail_stations \
+    --table=organization_route_ranges --table=system_settings \
+    > /backup/tbm_ref_$(date +%Y%m%d).sql
+```
+
+---
+
+## 10. 문제 해결
 
 ```bash
 cd /opt/track-block-management/install-usb
 
-# 코드 업데이트 후 재빌드
-git pull   # 또는 USB에서 새 버전 복사
+# 컨테이너 상태
+docker compose ps
 
-# 무중단 업데이트 (데이터 보존, Alembic 자동 마이그레이션)
-bash scripts/deploy.sh --mode a --update
-```
+# 백엔드 로그 (실시간)
+docker compose logs -f backend
 
----
-
-## 7. PostgreSQL 데이터 충돌 방지
-
-team-work-manager와 PostgreSQL DB가 **같은 컨테이너**인 경우:
-
-```bash
-# 두 앱의 DB명이 다른지 확인
-# track-block: track_block
-# team-work-manager: 해당 앱의 DB명 (충돌 없음)
-
-# alembic_version 테이블은 각 DB에 독립적으로 존재 → 버전 충돌 없음
-```
-
-team-work-manager와 **포트 5432가 겹치는 경우**:
-
-```bash
-# docker-compose.yml에서 db 서비스 포트 외부 노출 없음 (내부 네트워크만)
-# → 포트 충돌 없음 (tbm-db는 외부 5432 사용 안 함)
-```
-
----
-
-## 8. 운영 데이터 백업 (정기 실행 권장)
-
-```bash
-# 운영 데이터 백업 (block_orders, users, projects 포함)
-docker exec tbm-db pg_dump -U ${DB_USER:-tbm} track_block \
-    > backup_$(date +%Y%m%d_%H%M%S).sql
-
-# 기준데이터만 백업
-docker exec tbm-db pg_dump -U ${DB_USER:-tbm} track_block \
-    --data-only \
-    --table=organizations --table=rail_routes --table=rail_stations \
-    --table=organization_route_ranges --table=system_settings \
-    > ref_backup_$(date +%Y%m%d).sql
-```
-
----
-
-## 9. 문제 해결
-
-```bash
-# 컨테이너 상태 확인
-docker compose -f docker-compose.yml ps
-
-# 백엔드 로그
-docker compose -f docker-compose.yml logs -f backend
-
-# DB 로그
-docker compose -f docker-compose.yml logs -f db
-
-# 마이그레이션 상태 확인
-docker compose -f docker-compose.yml exec backend alembic current
+# 마이그레이션 현재 버전 확인
+docker compose exec backend alembic current
 
 # 마이그레이션 수동 실행
-docker compose -f docker-compose.yml exec backend alembic upgrade head
+docker compose exec backend alembic upgrade head
 
-# 컨테이너 전체 재시작
-docker compose -f docker-compose.yml restart
+# 전체 재시작
+docker compose restart
 
-# 완전 초기화 (데이터 삭제 주의!)
-docker compose -f docker-compose.yml down -v
-bash scripts/deploy.sh --mode a --seed
+# 완전 초기화 (운영 데이터 삭제 주의!)
+docker compose down -v
+bash install.sh --yes --mode a
 ```
 
 ---
 
-## 10. 파일 구조
+## 11. 파일 구조
 
 ```
 install-usb/
-├── README.md                 ← 이 문서
+├── README.md                 ← 이 문서 (AI 최신화 절차 포함)
+├── install.sh                ← 서버 원클릭 설치 스크립트 ★
 ├── .env.template             ← 환경변수 템플릿
 ├── docker-compose.yml        ← Docker 서비스 정의
 ├── Dockerfile.backend        ← FastAPI + Alembic
 ├── Dockerfile.frontend       ← React 빌드 + nginx
 ├── nginx/
-│   ├── app.conf              ← 내부 nginx 설정 (API 프록시 + SPA)
-│   └── integrated.conf       ← 기존 nginx에 추가할 location 블록
+│   ├── app.conf              ← 내부 nginx (API 프록시 + SPA fallback)
+│   └── integrated.conf       ← 기존 nginx에 추가할 /track location 블록
 ├── scripts/
-│   ├── deploy.sh             ← 전체 배포 자동화
-│   ├── restore-seed.sh       ← 기준데이터 복원
-│   └── entrypoint.sh         ← 백엔드 컨테이너 시작스크립트
+│   ├── prepare-usb.sh        ← Mac에서 USB 준비 자동화 ★
+│   ├── restore-seed.sh       ← 기준데이터 DB 복원
+│   └── entrypoint.sh         ← 백엔드 컨테이너 시작 (migrate→uvicorn)
 └── seed/
     ├── README.md             ← 시드 파일 안내
-    └── reference_data_*.sql  ← (USB 준비 시 직접 복사)
+    └── reference_data_*.sql  ← AI 최신화 시 자동 생성 (git 미포함)
 ```
