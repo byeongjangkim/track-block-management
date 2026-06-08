@@ -26,7 +26,8 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('access_token');
-      window.location.href = '/login';
+      // BASE_URL: 개발='/', 프로덕션 경로 배포 시='/track/' 등 Vite가 자동 주입
+      window.location.href = (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '') + '/login';
     }
     return Promise.reject(err);
   }

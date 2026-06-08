@@ -1,0 +1,68 @@
+services:
+
+  # ── PostgreSQL 16 ────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: tbm-db
+    environment:
+      POSTGRES_DB: track_block
+      POSTGRES_USER: ${DB_USER:-tbm}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD를 .env에 설정하세요}
+    volumes:
+      - tbm-db-data:/var/lib/postgresql/data
+    networks:
+      - tbm-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tbm} -d track_block"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── FastAPI 백엔드 ───────────────────────────────────────────────
+  backend:
+    build:
+      context: ..
+      dockerfile: install-usb/Dockerfile.backend
+    container_name: tbm-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${DB_USER:-tbm}:${DB_PASSWORD}@db:5432/track_block
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY를 .env에 설정하세요}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - tbm-uploads:/app/uploads
+    networks:
+      - tbm-net
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── React SPA + nginx ────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: install-usb/Dockerfile.frontend
+      args:
+        VITE_BASE_PATH: ${VITE_BASE_PATH:-}
+        VITE_API_URL: ${VITE_API_URL:-}
+    container_name: tbm-frontend
+    # 모드 A: EXPOSE_PORT=8080  →  외부 포트 노출
+    # 모드 B: EXPOSE_PORT=      →  외부 미노출 (기존 nginx에서 proxy_pass)
+    ports:
+      - "${EXPOSE_PORT:-8080}:80"
+    networks:
+      - tbm-net
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  tbm-db-data:
+  tbm-uploads:
+
+networks:
+  tbm-net:
+    driver: bridge
+    name: tbm-net

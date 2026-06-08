@@ -47,3 +47,8 @@ maps/data/korea_sido_full.geojson
 scripts/**/__pycache__/
 scripts/**/*.pyc
 backend/db.sqlite3
+
+# install-usb 시드 SQL (기준데이터 덤프 — USB 준비 시 수동 복사)
+install-usb/seed/*.sql
+# install-usb 환경변수 (서버별 설정)
+install-usb/.env
