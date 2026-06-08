@@ -337,8 +337,10 @@ function FacilityGroup({
 
 export default function BlockMapPage() {
   const user        = useAuthStore((s) => s.user);
-  const isSuperuser = user?.role === 'system_superuser';
-  const isOrgUser   = !isSuperuser && user?.organization_id != null;
+  const isSuperuser   = user?.role === 'system_superuser';
+  const isBlockManager = user?.role === 'block_manager';
+  const isOrgSelector = isSuperuser || isBlockManager; // 조직 선택 드롭다운 표시 대상
+  const isOrgUser     = !isOrgSelector && user?.organization_id != null;
   const [searchParams] = useSearchParams();
 
   // ── 차단명령 필터 ───────────────────────────────────────────────────────────
@@ -389,7 +391,7 @@ export default function BlockMapPage() {
   const [expandedFacilities,   setExpandedFacilities]   = useState<Set<'역' | '구조물' | '전기설비'>>(new Set());
 
   const showFacilitiesAny = Object.values(facilityFilter).some(Boolean);
-  const mapOrgId = isSuperuser ? selectedOrgId : (user?.organization_id ?? null);
+  const mapOrgId = isOrgSelector ? selectedOrgId : (user?.organization_id ?? null);
 
   // ── 데이터 조회 ──────────────────────────────────────────────────────────────
 
@@ -402,14 +404,14 @@ export default function BlockMapPage() {
   const { data: orgs = [] } = useQuery({
     queryKey: ['organizations'],
     queryFn: fetchOrganizations,
-    enabled: isSuperuser,
+    enabled: isOrgSelector,
     staleTime: Infinity,
   });
 
   const { data: orgBoundaryData } = useQuery({
     queryKey: ['org-route-boundaries', mapOrgId],
     queryFn: () => fetchRailRouteRegionBoundaries({ organization_id: mapOrgId! }),
-    enabled: !isSuperuser && mapOrgId != null,
+    enabled: !isOrgSelector && mapOrgId != null,
     staleTime: Infinity,
   });
 
@@ -419,9 +421,9 @@ export default function BlockMapPage() {
   }, [orgBoundaryData]);
 
   const filteredRoutes = useMemo(() => {
-    if (isSuperuser || orgRouteCodes == null) return routes;
+    if (isOrgSelector || orgRouteCodes == null) return routes;
     return routes.filter((r) => orgRouteCodes.has(r.code));
-  }, [routes, orgRouteCodes, isSuperuser]);
+  }, [routes, orgRouteCodes, isOrgSelector]);
 
   const { data: blockOrders = [], isLoading: ordersLoading } = useQuery({
     queryKey: ['block-orders-date', workDate, singleFilterRouteId, filterImplementer, filterWorkType, filterField],
@@ -678,8 +680,8 @@ export default function BlockMapPage() {
             </div>
           )}
 
-          {/* superuser: 조직 선택 드롭다운 한 줄 */}
-          {isSuperuser && (
+          {/* superuser/block_manager: 조직 선택 드롭다운 한 줄 */}
+          {isOrgSelector && (
             <div className="flex items-center gap-2">
               <label className="text-xs text-gray-400 shrink-0 w-7">조직</label>
               <select
@@ -827,7 +829,7 @@ export default function BlockMapPage() {
                   </label>
                   {showOrgBoundary && (
                     <p className="text-xs text-blue-500 mt-1 ml-5">
-                      {isSuperuser
+                      {isOrgSelector
                         ? orgs.find((o) => o.id === selectedOrgId)?.name ?? ''
                         : user?.organization_name ?? ''}
                     </p>
@@ -864,7 +866,7 @@ export default function BlockMapPage() {
                   <div className="text-[10px] text-gray-400 mb-1 flex items-center justify-between">
                     <span>
                       노선 필터
-                      {!isSuperuser && orgRouteCodes != null && (
+                      {!isOrgSelector && orgRouteCodes != null && (
                         <span className="ml-1 text-blue-400">담당 {filteredRoutes.length}개</span>
                       )}
                     </span>
