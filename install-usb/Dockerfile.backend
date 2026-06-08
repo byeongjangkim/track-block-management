@@ -15,6 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 애플리케이션 코드
 COPY backend/ .
 
+# 시군구 지도 GeoJSON (백엔드 /map/sigungu API가 파일 시스템에서 직접 읽음)
+# _MAP_DATA_DIR = Path(__file__).parent×5 / "maps/data" → 컨테이너 내 /maps/data
+RUN mkdir -p /maps/data
+COPY maps/data/korea_map_level1.geojson /maps/data/
+COPY maps/data/korea_map_level2.geojson /maps/data/
+
 # 업로드 디렉토리
 RUN mkdir -p uploads
 

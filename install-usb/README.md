@@ -13,27 +13,44 @@
 ### [AI 자동 수행] 최신화 체크리스트
 
 ```
-Step 1. 기준데이터 덤프 생성 (DB 접근 필요)
+Step 1. 기준데이터 덤프 생성 (로컬 PostgreSQL 실행 필요)
+        cd <프로젝트루트>
         bash backend/scripts/dump_reference_data.sh
         → backend/scripts/dumps/reference_data_<날짜>.sql 생성
+        
+        포함 데이터: rail_routes(153개 노선), rail_stations(역), rail_facilities(시설물),
+                    rail_baseline_points, rail_computed_geometry(노선 GeoJSON),
+                    rail_track_sections, organizations(14개 조직),
+                    organization_route_ranges(관할구간), system_settings,
+                    facilities(레거시 역 정보 565개), routes, org_viewport 등
 
 Step 2. 최신 덤프를 install-usb/seed/ 로 복사
+        rm -f install-usb/seed/reference_data_*.sql
         cp backend/scripts/dumps/reference_data_<최신>.sql install-usb/seed/
-        (기존 .sql 파일이 있으면 삭제 후 교체)
 
-Step 3. README.md 상단 "최종 갱신" 날짜 및 Alembic 버전 갱신
-        alembic current → 결과값으로 업데이트
+Step 3. [자동포함] 시군구 지도 GeoJSON — DB가 아닌 파일
+        maps/data/korea_map_level1.geojson (316KB, 시도 경계)
+        maps/data/korea_map_level2.geojson (1.2MB, 시군구 경계)
+        → Dockerfile.backend에서 /maps/data/ 로 자동 COPY 됨 (별도 작업 불필요)
 
-Step 4. .env.template 동기화
-        backend/.env.example 또는 app/core/config.py의 새 환경변수가 있으면 반영
+Step 4. [자동생성] 사용자 기본 계정 — Alembic 마이그레이션이 처리
+        tc15: block_manager 계정 생성
+        tc16: admin@korail.com / block_manager 비밀번호 korail7788! 설정
+        → entrypoint.sh에서 'alembic upgrade head' 자동 실행 (seed 불필요)
 
-Step 5. Dockerfile 의존성 확인
+Step 5. README.md 상단 "최종 갱신" 날짜 및 Alembic 버전 갱신
+        cd backend && source .venv/bin/activate && alembic current
+        → 결과값으로 README 최상단 업데이트
+
+Step 6. .env.template 동기화
+        app/core/config.py에 새 환경변수 추가 시 .env.template에 반영
+
+Step 7. Dockerfile 의존성 확인
         backend/requirements.txt 변경 → Dockerfile.backend 자동 반영 (COPY 방식)
         frontend/package.json 변경  → Dockerfile.frontend 자동 반영 (COPY 방식)
         → 변경 없으면 패스
 
-Step 6. install-usb 파일 변경 커밋 제안
-        (seed/*.sql 제외 — gitignore 대상)
+Step 8. install-usb 변경 커밋 제안 (seed/*.sql 제외 — .gitignore 대상)
 ```
 
 ### [사용자 수동] USB 최종 복사

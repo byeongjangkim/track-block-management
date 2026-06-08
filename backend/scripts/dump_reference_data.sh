@@ -37,6 +37,7 @@ pg_dump \
   --table=rail_station_management_groups \
   --table=rail_station_management_members \
   --table=organization_route_ranges \
+  --table=facilities \
   "$DB_NAME" > "$OUTPUT"
 
 SIZE=$(wc -c < "$OUTPUT" | awk '{printf "%.1fMB", $1/1024/1024}')
